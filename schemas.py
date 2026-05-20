@@ -89,3 +89,9 @@ class UsuarioOut(BaseModel):
 class UsuarioLogin(BaseModel):
     username: str
     password: str
+    
+class RespuestaIA(BaseModel):
+    resumen_paciente: str
+    analisis_evolucion: str
+    sugerencias_clinicas: List[str]
+    pruebas_sugeridas: List[str]

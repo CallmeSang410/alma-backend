@@ -8,6 +8,8 @@ import bcrypt
 import jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from schemas import RespuestaIA # Importamos el molde
+from test_ia import analizar_notas_con_ia
 
 
 
@@ -319,3 +321,14 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
         "mensaje": "¡Bienvenido a ALMA!", 
         "tu_gafete_digital": token_vip
     }
+    
+
+
+app = FastAPI()
+
+# Le decimos que la respuesta de este endpoint será nuestro molde RespuestaIA
+@app.post("/api/analizar-sesion", response_model=RespuestaIA)
+def analizar_sesion(notas: str):
+    # Llamamos a la función que acabamos de crear
+    resultado_ia = analizar_notas_con_ia(notas)
+    return resultado_ia
