@@ -323,9 +323,6 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
     }
     
 
-
-app = FastAPI()
-
 # Le decimos que la respuesta de este endpoint será nuestro molde RespuestaIA
 @app.post("/api/analizar-sesion", response_model=RespuestaIA)
 def analizar_sesion(notas: str):
