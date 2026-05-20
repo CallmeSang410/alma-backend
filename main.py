@@ -288,6 +288,83 @@ def leer_pacientes(
     ).all()
     
     return pacientes
+
+# --- VENTANILLA: AGREGAR UN EVENTO A LA LÍNEA DE TIEMPO ---
+@app.post("/pacientes/{paciente_id}/eventos", response_model=schemas.EventoVidaOut)
+def crear_evento_vida(paciente_id: int, evento: schemas.EventoVidaCreate, db: Session = Depends(get_db)):
+    # 1. Verificamos que el paciente exista
+    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+    if not paciente_encontrado:
+        raise HTTPException(status_code=404, detail="El paciente no existe")
+
+    # 2. Creamos el evento conectándolo con el paciente
+    nuevo_evento = models.EventoVida(
+        titulo=evento.titulo,
+        fecha_evento=evento.fecha_evento,
+        descripcion=evento.descripcion,
+        impacto=evento.impacto,
+        paciente_id=paciente_id
+    )
+    
+    # 3. Lo guardamos
+    db.add(nuevo_evento)
+    db.commit()
+    db.refresh(nuevo_evento)
+    
+    return nuevo_evento
+
+
+# --- VENTANILLA: OBTENER LA LÍNEA DE TIEMPO COMPLETA ---
+@app.get("/pacientes/{paciente_id}/eventos", response_model=List[schemas.EventoVidaOut])
+def obtener_linea_tiempo(paciente_id: int, db: Session = Depends(get_db)):
+    # 1. Buscamos todos los eventos de este paciente específico
+    # Y los ordenamos (.order_by) por fecha para que la línea de tiempo tenga sentido cronológico
+    eventos = db.query(models.EventoVida)\
+                .filter(models.EventoVida.paciente_id == paciente_id)\
+                .order_by(models.EventoVida.fecha_evento.asc())\
+                .all()
+    
+    return eventos
+
+# --- VENTANILLA: MODIFICAR UN EVENTO (UPDATE) ---
+@app.put("/eventos/{evento_id}", response_model=schemas.EventoVidaOut)
+def actualizar_evento(evento_id: int, evento_actualizado: schemas.EventoVidaCreate, db: Session = Depends(get_db)):
+    
+    # 1. Buscamos el evento exacto en la base de datos
+    evento_encontrado = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
+    
+    if not evento_encontrado:
+        raise HTTPException(status_code=404, detail="El evento no existe")
+        
+    # 2. Reemplazamos los datos viejos con los nuevos que nos mandó el frontend
+    evento_encontrado.titulo = evento_actualizado.titulo
+    evento_encontrado.fecha_evento = evento_actualizado.fecha_evento
+    evento_encontrado.descripcion = evento_actualizado.descripcion
+    evento_encontrado.impacto = evento_actualizado.impacto
+    
+    # 3. Guardamos los cambios
+    db.commit()
+    db.refresh(evento_encontrado)
+    
+    return evento_encontrado
+
+# --- VENTANILLA: BORRAR UN EVENTO (DELETE) ---
+@app.delete("/eventos/{evento_id}")
+def eliminar_evento(evento_id: int, db: Session = Depends(get_db)):
+    
+    # 1. Buscamos el evento
+    evento_encontrado = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
+    
+    if not evento_encontrado:
+        raise HTTPException(status_code=404, detail="El evento no existe")
+        
+    # 2. Le damos la orden a SQLAlchemy de borrarlo
+    db.delete(evento_encontrado)
+    db.commit()
+    
+    # 3. Devolvemos un mensaje de éxito para que React sepa que ya no existe
+    return {"mensaje": f"El evento '{evento_encontrado.titulo}' ha sido eliminado exitosamente del historial."}
+
 @app.post("/login")
 def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get_db)):
     
