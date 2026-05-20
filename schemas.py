@@ -95,3 +95,22 @@ class RespuestaIA(BaseModel):
     analisis_evolucion: str
     sugerencias_clinicas: List[str]
     pruebas_sugeridas: List[str]
+    
+# Molde para cuando el psicólogo CREA un evento nuevo
+class EventoVidaCreate(BaseModel):
+    titulo: str
+    fecha_evento: str
+    descripcion: str
+    impacto: str
+
+# Molde para cuando le ENVIAMOS los eventos a Dervin (React)
+class EventoVidaOut(BaseModel):
+    id: int
+    titulo: str
+    fecha_evento: str
+    descripcion: str
+    impacto: str
+    paciente_id: int
+
+    class Config:
+        from_attributes = True
