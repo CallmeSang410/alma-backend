@@ -1,7 +1,10 @@
+import os
+from dotenv import load_dotenv
 import google.generativeai as genai
 
+load_dotenv()
 # Pon tu clave real aquí
-genai.configure(api_key="AIzaSyDe95wrUINgqN0WSl3xlbNpalSB9m6qGas")
+genai.configure(api_key="GEMINI_API_KEY")
 
 print("Buscando modelos disponibles para tu cuenta...")
 print("-" * 30)

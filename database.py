@@ -1,11 +1,13 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
+import os
+from dotenv import load_dotenv
 
+
+load_dotenv()
 # 1. LA URL DE CONEXIÓN (La dirección exacta de tu bóveda)
-# Formato: postgresql://usuario:contraseña@servidor:puerto/nombre_bd
-# OJO: Cambia "TU_CONTRASEÑA" por la contraseña real que usaste en pgAdmin
-URL_BASE_DATOS = "postgresql://postgres:zombiditoz7@localhost:5432/alma_db"
+URL_BASE_DATOS = os.getenv("DATABASE_URL")
 
 # 2. EL MOTOR (Engine)
 # Es el encargado físico de mantener la conexión abierta con PostgreSQL
