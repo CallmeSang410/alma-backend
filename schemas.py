@@ -3,18 +3,26 @@ from datetime import datetime # <-- NUEVO: Importamos el manejador de tiempo
 from typing import List, Optional
 
 # --- MOLDES DE PACIENTE (Estos ya los tenías) ---
+# Molde para CREAR o ACTUALIZAR el paciente
 class PacienteCreate(BaseModel):
-    nombre: str
-    telefono: str
-    # ¡Importante! Aquí NO va el clinica_id. 
-    # El usuario no lo envía, nosotros lo pondremos en secreto.
+    nombre: str                  # Obligatorio (*)
+    telefono: str                # Obligatorio (*)
+    email: str | None = None     # Opcional (sin asterisco)
+    edad: int                    # Obligatorio (*)
+    estado: str = "Pendiente"    # El dropdown de Dervin dice "Pendiente (Por evaluar)"
+    diagnostico_principal: str   # Obligatorio (*)
 
 class PacienteOut(BaseModel):
     id: int
     nombre: str
     telefono: str
-    clinica_id: int # Aquí sí va, porque se lo mostramos de regreso
-    
+    email: str | None
+    edad: int 
+    sexo: str 
+    estado: str
+    diagnostico_principal: str 
+    clinica_id: int
+
     class Config:
         from_attributes = True
 
@@ -73,21 +81,21 @@ class ClinicaOut(BaseModel):
         from_attributes = True
 
 class UsuarioCreate(BaseModel):
-    username: str
+    email: str
     password: str # El usuario manda texto plano
     rol: str = "psicologo"
-    clinica_id: int
+
 
 class UsuarioOut(BaseModel):
     id: int
-    username: str
+    email: str
     rol: str
     clinica_id: int
     class Config:
         from_attributes = True
         
 class UsuarioLogin(BaseModel):
-    username: str
+    email: str
     password: str
     
 class RespuestaIA(BaseModel):

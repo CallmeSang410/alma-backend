@@ -10,9 +10,13 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from schemas import RespuestaIA # Importamos el molde
 from test_ia import analizar_notas_con_ia
+from passlib.context import CryptContext
+
+# Encendemos el motor de encriptación para las contraseñas
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Creamos las tablas si no existen
 models.Base.metadata.create_all(bind=engine)
 
@@ -20,7 +24,7 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI()
 # Lista de direcciones a las que les damos permiso
 origenes_permitidos = [
-    "http://localhost:5174", # La dirección de tu React de Vite
+    "http://localhost:5173", # La dirección de tu React de Vite
 ]
 
 app.add_middleware(
@@ -208,30 +212,34 @@ def crear_clinica(clinica: schemas.ClinicaCreate, db: Session = Depends(get_db))
     return nueva_clinica
 
 # Ventanilla para crear el Usuario (Psicólogo)
-@app.post("/usuarios", response_model=schemas.UsuarioOut)
+# No olvides importar la librería de hash si no la tienes: 
+# from passlib.context import CryptContext
+# pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+@app.post("/usuarios")
 def crear_usuario(usuario: schemas.UsuarioCreate, db: Session = Depends(get_db)):
     
-    # 1. Encriptamos con bcrypt puro
-    # Convertimos la contraseña a bytes, generamos una 'sal' aleatoria, y la licuamos
-    password_bytes = usuario.password.encode('utf-8')
-    sal = bcrypt.gensalt()
-    password_encriptada_bytes = bcrypt.hashpw(password_bytes, sal)
-    
-    # La convertimos de vuelta a string de texto para guardarla en PostgreSQL
-    password_encriptada_str = password_encriptada_bytes.decode('utf-8')
-    
-    # 2. Creamos el registro con la contraseña segura (El Hash)
+    # 1. Verificamos si el correo ya existe
+    db_user = db.query(models.Usuario).filter(models.Usuario.username == usuario.email).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Este correo ya está registrado")
+
+    # 2. Encriptamos la contraseña (¡NUNCA la guardes en texto plano!)
+    hashed_pwd = pwd_context.hash(usuario.password)
+
+    # 3. Armamos al usuario rellenando los huecos para que PostgreSQL no se queje
     nuevo_usuario = models.Usuario(
-        username=usuario.username,
-        hashed_password=password_encriptada_str,
-        rol=usuario.rol,
-        clinica_id=usuario.clinica_id
+        username=usuario.email, # El email de Dervin pasa a ser el username
+        hashed_password=hashed_pwd,
+        rol="admin", # Le damos rol de administrador por defecto
+        clinica_id=1 # OJO: Por ahora lo metemos a la clínica #1 a la fuerza
     )
-    
+
     db.add(nuevo_usuario)
     db.commit()
     db.refresh(nuevo_usuario)
-    return nuevo_usuario
+    
+    return {"mensaje": "Usuario creado con éxito"}
 
 # La "contraseña maestra" de tu servidor para firmar los gafetes VIP. 
 # En un proyecto real esto se esconde, pero para pruebas está bien aquí.
@@ -252,21 +260,22 @@ def obtener_usuario_actual(credenciales: HTTPAuthorizationCredentials = Depends(
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Gafete inválido o falso. ¡Intruso detectado!")
 
-# --- NUESTRO PRIMER ENDPOINT REAL ---
-# Usamos @app.post porque vamos a CREAR información nueva
 @app.post("/pacientes", response_model=schemas.PacienteOut)
 def crear_paciente(
     paciente: schemas.PacienteCreate, 
     db: Session = Depends(get_db),
-    usuario_actual: dict = Depends(obtener_usuario_actual) # <--- 1. Exigimos el gafete
+    usuario_actual: dict = Depends(obtener_usuario_actual)
 ):
     
-    # 2. Construimos al paciente fusionando lo que escribió el usuario 
-    # con el dato secreto (clinica_id) que venía en su gafete.
+    # Armamos el paciente con TODOS los datos que mandó el formulario de Dervin
     nuevo_paciente = models.Paciente(
         nombre=paciente.nombre,
         telefono=paciente.telefono,
-        clinica_id=usuario_actual["clinica_id"] # <--- 3. ¡Inyección automática!
+        email=paciente.email,
+        edad=paciente.edad,
+        estado=paciente.estado,
+        diagnostico_principal=paciente.diagnostico_principal,
+        clinica_id=usuario_actual["clinica_id"] # El ID secreto del gafete
     )
     
     db.add(nuevo_paciente)
@@ -368,19 +377,18 @@ def eliminar_evento(evento_id: int, db: Session = Depends(get_db)):
 @app.post("/login")
 def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get_db)):
     
-    # 1. Buscar si el usuario existe en el edificio
-    usuario_db = db.query(models.Usuario).filter(models.Usuario.username == credenciales.username).first()
-    if not usuario_db:
-        # Si no existe, lo rebotamos
-        raise HTTPException(status_code=404, detail="El usuario no existe")
-
-    # 2. Verificar si la llave (contraseña) encaja
-    password_intento_bytes = credenciales.password.encode('utf-8')
-    password_real_bytes = usuario_db.hashed_password.encode('utf-8')
+    # EL CAMBIO ESTÁ AQUÍ: Comparamos el username de la BD con el EMAIL que mandó React
+    usuario_db = db.query(models.Usuario).filter(models.Usuario.username == credenciales.email).first()
     
-    # bcrypt.checkpw hace la magia de comparar los dos hashes de forma segura
-    if not bcrypt.checkpw(password_intento_bytes, password_real_bytes):
-        raise HTTPException(status_code=401, detail="Contraseña incorrecta")
+    if not usuario_db:
+        raise HTTPException(status_code=401, detail="El correo o la contraseña son incorrectos")
+        
+    # Verificamos que la contraseña coincida con el hash
+    if not pwd_context.verify(credenciales.password, usuario_db.hashed_password):
+        raise HTTPException(status_code=401, detail="El correo o la contraseña son incorrectos")
+        
+    # (Aquí va tu código para generar el token JWT que ya tenías)
+    # ...
 
     # 3. Si todo está correcto, le imprimimos su Gafete VIP (Token JWT)
     # Aquí adentro guardamos la información que el sistema necesita recordar de él

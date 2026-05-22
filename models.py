@@ -24,13 +24,17 @@ class Usuario(Base):
 
 class Paciente(Base):
     __tablename__ = "pacientes"
+
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String, index=True)
-    telefono = Column(String)
+    # ... (tus otros campos de email, edad, diagnostico, etc) ...
     
     clinica_id = Column(Integer, ForeignKey("clinicas.id"))
+    
+    # Las conexiones (relationships) de SQLAlchemy:
     clinica = relationship("Clinica", back_populates="pacientes")
     
+    # --- LA NUEVA LÍNEA PARA MATAR ESTE ERROR ---
     citas = relationship("Cita", back_populates="paciente")
 
 class Cita(Base):
