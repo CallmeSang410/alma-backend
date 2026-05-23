@@ -5,12 +5,13 @@ from datetime import datetime
 
 class Clinica(Base):
     __tablename__ = "clinicas"
+
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String, unique=True, index=True)
-    
-    # Relaciones
-    usuarios = relationship("Usuario", back_populates="clinica")
+
+    # 🌟 Asegúrate de que apunte exactamente a "clinica" en minúsculas y singular
     pacientes = relationship("Paciente", back_populates="clinica")
+    usuarios = relationship("Usuario", back_populates="clinica")
 
 class Usuario(Base):
     __tablename__ = "usuarios"
@@ -27,26 +28,35 @@ class Paciente(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String, index=True)
-    # ... (tus otros campos de email, edad, diagnostico, etc) ...
-    
+    telefono = Column(String, nullable=True)
+    email = Column(String, index=True, nullable=True)
+    edad = Column(Integer, nullable=True)
+    estado = Column(String, nullable=True)
+    diagnostico_principal = Column(String, nullable=True)
     clinica_id = Column(Integer, ForeignKey("clinicas.id"))
     
-    # Las conexiones (relationships) de SQLAlchemy:
+    # La relación que ya arreglamos antes
     clinica = relationship("Clinica", back_populates="pacientes")
     
-    # --- LA NUEVA LÍNEA PARA MATAR ESTE ERROR ---
+    # 🌟 AGREGA ESTA LÍNEA QUE ES LA QUE TE FALTA:
+    # Le dice a SQLAlchemy: "Un paciente tiene muchas citas, y en la tabla Cita la propiedad se llama 'paciente'"
     citas = relationship("Cita", back_populates="paciente")
-
+    # (Tus otras columnas y relaciones de Paciente...)
+    citas = relationship("Cita", back_populates="paciente")
+    
+    # 🌟 NUEVO: Para la línea de tiempo de HorizonFlow
+    eventos = relationship("EventoVida", back_populates="paciente")
 class Cita(Base):
     __tablename__ = "citas"
+
     id = Column(Integer, primary_key=True, index=True)
-    fecha_cita = Column(DateTime, default=datetime.now)
     motivo = Column(String)
-    
+    fecha_cita = Column(DateTime)
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
+
     paciente = relationship("Paciente", back_populates="citas")
     
-    # Relación uno a uno con el reporte
+    # 🌟 NUEVO: El espejo que el Reporte estaba buscando
     reporte = relationship("Reporte", back_populates="cita", uselist=False)
 
 class Reporte(Base):
@@ -63,10 +73,12 @@ class EventoVida(Base):
     __tablename__ = "eventos_vida"
 
     id = Column(Integer, primary_key=True, index=True)
-    titulo = Column(String, nullable=False) # Ej: "Fallecimiento del abuelo"
-    fecha_evento = Column(String, nullable=False) # Usamos String para que sea fácil (Ej: "2015" o "2015-05-14")
-    descripcion = Column(Text) # Detalles de lo que pasó
-    impacto = Column(String) # Ej: "Positivo", "Negativo", "Trauma", "Neutral"
+    titulo = Column(String, nullable=False)
+    fecha_evento = Column(String, nullable=False) 
+    descripcion = Column(Text) 
+    impacto = Column(String) 
     
-    # La llave foránea para saber a qué paciente le pertenece este recuerdo
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
+    
+    # 🌟 NUEVO: El espejo para conectar con el Paciente
+    paciente = relationship("Paciente", back_populates="eventos")

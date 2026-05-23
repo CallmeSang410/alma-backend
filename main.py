@@ -11,6 +11,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from schemas import RespuestaIA # Importamos el molde
 from test_ia import analizar_notas_con_ia
 from passlib.context import CryptContext
+from fastapi.security import OAuth2PasswordBearer
+import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+import os
+from dotenv import load_dotenv
+
+load_dotenv() # Esto lee tu archivo .env
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+
+
+# Esto le dice a FastAPI que busque el token en el Header de "Authorization"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # Encendemos el motor de encriptación para las contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -248,26 +263,48 @@ SECRETO_ALMA = "super_secreto_para_gafetes_123"
 security = HTTPBearer()
 
 # Este es el Cadenero Oficial de ALMA
-def obtener_usuario_actual(credenciales: HTTPAuthorizationCredentials = Depends(security)):
-    token = credenciales.credentials # Aquí saca el gafete del bolsillo invisible
+def obtener_usuario_actual(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Credenciales inválidas",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    print("\n========================================")
+    print("       🕵️‍♂️ REVISANDO GAFETE DE SEGURIDAD")
+    print("========================================")
+    
     try:
-        # Intenta desencriptar el gafete usando nuestra contraseña maestra
-        payload = jwt.decode(token, SECRETO_ALMA, algorithms=["HS256"])
-        return payload # Si es válido, devuelve los datos: usuario_id, clinica_id, rol
+        # Abrimos con la llave oficial del .env
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="El gafete ha expirado. Vuelve a iniciar sesión.")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Gafete inválido o falso. ¡Intruso detectado!")
+        # Extraemos el ID del usuario, no el "sub"
+        user_id = payload.get("usuario_id") 
+        
+        if user_id is None:
+            raise credentials_exception
+            
+    except Exception as e:
+        print(f"❌ ERROR AL ABRIR EL TOKEN: {e}")
+        raise credentials_exception
+        
+    # Buscamos en PostgreSQL por ID
+    usuario = db.query(models.Usuario).filter(models.Usuario.id == user_id).first()
+    
+    if usuario is None:
+        raise credentials_exception
+        
+    print("✅ Gafete Válido. Acceso Permitido.")
+    print("========================================\n")
+    return usuario
 
 @app.post("/pacientes", response_model=schemas.PacienteOut)
 def crear_paciente(
     paciente: schemas.PacienteCreate, 
     db: Session = Depends(get_db),
-    usuario_actual: dict = Depends(obtener_usuario_actual)
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual) # <-- ¡Regresa el guardia de seguridad!
 ):
     
-    # Armamos el paciente con TODOS los datos que mandó el formulario de Dervin
     nuevo_paciente = models.Paciente(
         nombre=paciente.nombre,
         telefono=paciente.telefono,
@@ -275,7 +312,8 @@ def crear_paciente(
         edad=paciente.edad,
         estado=paciente.estado,
         diagnostico_principal=paciente.diagnostico_principal,
-        clinica_id=usuario_actual["clinica_id"] # El ID secreto del gafete
+        # ¡MAGIA SAAS! El paciente se asigna automáticamente a la clínica del doctor logueado
+        clinica_id=usuario_actual.clinica_id 
     )
     
     db.add(nuevo_paciente)
@@ -287,13 +325,11 @@ def crear_paciente(
 @app.get("/pacientes", response_model=List[schemas.PacienteOut])
 def leer_pacientes(
     db: Session = Depends(get_db), 
-    usuario_actual: dict = Depends(obtener_usuario_actual) # <--- Aquí pusimos al cadenero en la puerta
+    usuario_actual: models.Usuario = Depends(obtener_usuario_actual) 
 ):
-    # Si el código llega a esta línea, significa que el usuario sí traía un gafete válido.
-    
-    # En lugar de traer .all(), filtramos usando el dato que venía escondido en el Token:
+    # Usamos .clinica_id (con punto) porque es un objeto de BD, no un diccionario
     pacientes = db.query(models.Paciente).filter(
-        models.Paciente.clinica_id == usuario_actual["clinica_id"]
+        models.Paciente.clinica_id == usuario_actual.clinica_id
     ).all()
     
     return pacientes
@@ -376,34 +412,22 @@ def eliminar_evento(evento_id: int, db: Session = Depends(get_db)):
 
 @app.post("/login")
 def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get_db)):
-    
-    # EL CAMBIO ESTÁ AQUÍ: Comparamos el username de la BD con el EMAIL que mandó React
     usuario_db = db.query(models.Usuario).filter(models.Usuario.username == credenciales.email).first()
     
-    if not usuario_db:
+    if not usuario_db or not pwd_context.verify(credenciales.password, usuario_db.hashed_password):
         raise HTTPException(status_code=401, detail="El correo o la contraseña son incorrectos")
         
-    # Verificamos que la contraseña coincida con el hash
-    if not pwd_context.verify(credenciales.password, usuario_db.hashed_password):
-        raise HTTPException(status_code=401, detail="El correo o la contraseña son incorrectos")
-        
-    # (Aquí va tu código para generar el token JWT que ya tenías)
-    # ...
-
-    # 3. Si todo está correcto, le imprimimos su Gafete VIP (Token JWT)
-    # Aquí adentro guardamos la información que el sistema necesita recordar de él
     datos_gafete = {
         "usuario_id": usuario_db.id,
         "clinica_id": usuario_db.clinica_id,
         "rol": usuario_db.rol
     }
     
-    # Sellamos el gafete con el SECRETO_ALMA para que nadie lo pueda falsificar
-    token_vip = jwt.encode(datos_gafete, SECRETO_ALMA, algorithm="HS256")
+    # EL ARREGLO: Usamos la SECRET_KEY global, no el SECRETO_ALMA viejo
+    token_vip = jwt.encode(datos_gafete, SECRET_KEY, algorithm=ALGORITHM)
 
-    # Le entregamos su pase
     return {
-        "mensaje": "¡Bienvenido a ALMA!", 
+        "mensaje": "¡Bienvenido a HorizonFlow!", 
         "tu_gafete_digital": token_vip
     }
     
