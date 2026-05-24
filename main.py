@@ -77,24 +77,24 @@ def buscar_paciente(paciente_id: int, db: Session = Depends(get_db)):
 @app.put("/pacientes/{paciente_id}", response_model=schemas.PacienteOut)
 def actualizar_paciente(paciente_id: int, paciente_actualizado: schemas.PacienteCreate, db: Session = Depends(get_db)):
     
-    # 1. Buscamos al paciente en la base de datos (Igual que en el GET)
+    # 1. Buscamos al paciente
     paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
     
-    # 2. Si no existe, lanzamos el error 404
     if paciente_encontrado is None:
         raise HTTPException(status_code=404, detail="El paciente no existe")
     
-    # 3. Si sí existe, reemplazamos sus datos viejos por los nuevos que llegaron en el JSON
+    # 2. 🌟 ACTUALIZAMOS ABSOLUTAMENTE TODOS LOS CAMPOS 🌟
     paciente_encontrado.nombre = paciente_actualizado.nombre
     paciente_encontrado.telefono = paciente_actualizado.telefono
+    paciente_encontrado.email = paciente_actualizado.email
+    paciente_encontrado.edad = paciente_actualizado.edad
+    paciente_encontrado.estado = paciente_actualizado.estado
+    paciente_encontrado.diagnostico_principal = paciente_actualizado.diagnostico_principal
     
-    # 4. Guardamos los cambios permanentemente en PostgreSQL
+    # 3. Guardamos los cambios
     db.commit()
-    
-    # 5. Refrescamos para tener la versión más reciente
     db.refresh(paciente_encontrado)
     
-    # 6. Devolvemos el paciente ya modificado
     return paciente_encontrado
 
 # --- NUEVA VENTANILLA: ELIMINAR UN PACIENTE ---

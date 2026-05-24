@@ -2,29 +2,19 @@ from pydantic import BaseModel
 from datetime import datetime # <-- NUEVO: Importamos el manejador de tiempo
 from typing import List, Optional
 
-# --- MOLDES DE PACIENTE (Estos ya los tenías) ---
-# Molde para CREAR o ACTUALIZAR el paciente
-class PacienteCreate(BaseModel):
-    nombre: str                  # Obligatorio (*)
-    telefono: str                # Obligatorio (*)
-    email: str | None = None     # Opcional (sin asterisco)
-    edad: int                    # Obligatorio (*)
-    estado: str = "Pendiente"    # El dropdown de Dervin dice "Pendiente (Por evaluar)"
-    diagnostico_principal: str   # Obligatorio (*)
-
-class PacienteOut(BaseModel):
-    id: int
+# 1. El molde base con TODOS los campos
+class PacienteBase(BaseModel):
     nombre: str
-    telefono: str
-    email: str | None
-    edad: int 
-    sexo: str 
-    estado: str
-    diagnostico_principal: str 
-    clinica_id: int
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    edad: Optional[int] = None
+    estado: Optional[str] = "Activo"
+    diagnostico_principal: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+# 2. Lo que exigimos cuando crean/editan uno nuevo
+class PacienteCreate(PacienteBase):
+    pass
+
 
 # --- NUEVOS MOLDES PARA CITAS ---
 
@@ -43,17 +33,14 @@ class CitaOut(BaseModel):
     class Config:
         from_attributes = True
         
-# 2. DESPUÉS EL MOLDE DE SALIDA DEL PACIENTE
-class PacienteOut(BaseModel):
+# 🌟 EL MOLDE DE SALIDA DEFINITIVO Y CORRECTO:
+class PacienteOut(PacienteBase): # <-- IMPORTANTE: Ahora sí hereda de PacienteBase
     id: int
-    nombre: str
-    telefono: str
-    # --- LA MAGIA: Le agregamos el historial de citas ---
-    citas: List[CitaOut] = [] 
+    clinica_id: int              # <-- Conservamos el ID de la clínica para el SaaS
+    citas: List[CitaOut] = []    # <-- Conservamos el historial de citas jalado de la BD
 
     class Config:
         from_attributes = True
-
 # Molde para crear el reporte (lo que recibimos del psicólogo)
 class ReporteCreate(BaseModel):
     notas_psicologo: str
