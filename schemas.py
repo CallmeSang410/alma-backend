@@ -18,17 +18,21 @@ class PacienteCreate(PacienteBase):
 
 # --- NUEVOS MOLDES PARA CITAS ---
 
-# Molde de ENTRADA (Lo que pedimos en internet para crear una cita)
+# Molde de ENTRADA (Lo que React nos manda al guardar)
 class CitaCreate(BaseModel):
     motivo: str
-    fecha_cita: datetime # Pydantic exigirá un formato de fecha válido
+    fecha_cita: datetime 
+    urgencia: str
+    estado: str
 
-# Molde de SALIDA (Lo que devolvemos después de guardar)
+# Molde de SALIDA (Lo que le devolvemos a React para pintar las tarjetas)
 class CitaOut(BaseModel):
     id: int
     motivo: str
     fecha_cita: datetime
-    paciente_id: int # Devolvemos de quién es la cita para estar seguros
+    urgencia: str
+    estado: str
+    paciente_id: int
 
     class Config:
         from_attributes = True
@@ -41,17 +45,41 @@ class PacienteOut(PacienteBase): # <-- IMPORTANTE: Ahora sí hereda de PacienteB
 
     class Config:
         from_attributes = True
-# Molde para crear el reporte (lo que recibimos del psicólogo)
-class ReporteCreate(BaseModel):
-    notas_psicologo: str
 
-# Molde para mostrar el reporte (lo que devolvemos)
+# Molde de Entrada (Lo que el frontend envía al final del Paso 4)
+class ReporteCreate(BaseModel):
+    motivo_consulta: str
+    notas_psicologo: str
+    pruebas_aplicadas: Optional[str] = None
+    diagnostico_final: str
+    recomendaciones: str
+    plan_accion: str
+
+# --- Agregá este molde nuevo arriba en schemas.py ---
+class PacienteParaReporte(BaseModel):
+    nombre: str
+    edad: Optional[int] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+# Molde de Salida (Lo que devolvemos)
 class ReporteOut(BaseModel):
     id: int
+    motivo_consulta: Optional[str] = None
     notas_psicologo: str
+    pruebas_aplicadas: Optional[str] = None
     analisis_ia: Optional[str] = None
+    diagnostico_final: Optional[str] = None
+    recomendaciones: Optional[str] = None
+    plan_accion: Optional[str] = None
     fecha_generacion: datetime
     cita_id: int
+    
+    # 🌟 LA GAVETA MÁGICA: Aquí vendrán los datos del paciente unidos
+    paciente_data: Optional[PacienteParaReporte] = None 
 
     class Config:
         from_attributes = True
@@ -85,11 +113,6 @@ class UsuarioLogin(BaseModel):
     email: str
     password: str
     
-class RespuestaIA(BaseModel):
-    resumen_paciente: str
-    analisis_evolucion: str
-    sugerencias_clinicas: List[str]
-    pruebas_sugeridas: List[str]
     
 # Molde para cuando el psicólogo CREA un evento nuevo
 class EventoVidaCreate(BaseModel):

@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 import models, schemas
 from database import engine, get_db
@@ -8,7 +8,6 @@ import bcrypt
 import jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from schemas import RespuestaIA # Importamos el molde
 from test_ia import analizar_notas_con_ia
 from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer
@@ -17,6 +16,22 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import os
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware # <-- Asegurate de importar esto
+from datetime import datetime, timedelta
+from fastapi import Query
+app = FastAPI()
+
+# 🌟 ESTA ES LA PUERTA ABIERTA PARA REACT
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Permitir peticiones desde cualquier lugar (en desarrollo)
+    allow_credentials=True,
+    allow_methods=["*"], # Permitir GET, POST, PUT, DELETE, etc.
+    allow_headers=["*"], # Permitir todos los headers (incluyendo tu Token)
+    expose_headers=["*"]
+
+)
+
 
 load_dotenv() # Esto lee tu archivo .env
 
@@ -33,6 +48,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Creamos las tablas si no existen
+# 💥 LA BOMBA ATÓMICA: Borra todo y lo vuelve a crear con los planos nuevos
 models.Base.metadata.create_all(bind=engine)
 
 
@@ -118,23 +134,23 @@ def eliminar_paciente(paciente_id: int, db: Session = Depends(get_db)):
     # 5. Devolvemos un mensaje de confirmación en lugar de los datos del paciente (porque ya no existen)
     return {"mensaje": f"El paciente con ID {paciente_id} ha sido eliminado de ALMA exitosamente."}
 
-# --- NUEVA VENTANILLA: AGENDAR UNA CITA ---
-# Fíjate en la ruta: POST /pacientes/{paciente_id}/citas
-# Esto es semántica pura: "Crea una cita DENTRO del paciente X"
+# --- VENTANILLA 1: AGENDAR UNA CITA ---
 @app.post("/pacientes/{paciente_id}/citas", response_model=schemas.CitaOut)
 def crear_cita(paciente_id: int, cita: schemas.CitaCreate, db: Session = Depends(get_db)):
     
-    # 1. Primero, verificamos que el paciente realmente exista en ALMA
+    # 1. Verificamos que el paciente exista
     paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
     if paciente_encontrado is None:
         raise HTTPException(status_code=404, detail="No puedes agendarle una cita a un paciente que no existe")
 
     # 2. Creamos la cita conectándola con el paciente
-    # Tomamos el motivo y la fecha que vinieron de internet, y le inyectamos el ID que vino en la URL
+    # 🌟 AHORA SÍ GUARDAMOS LA URGENCIA Y EL ESTADO 🌟
     nueva_cita = models.Cita(
         motivo=cita.motivo, 
         fecha_cita=cita.fecha_cita, 
-        paciente_id=paciente_id  # <--- AQUÍ ESTÁ EL PUENTE DE LA LLAVE FORÁNEA
+        urgencia=cita.urgencia, 
+        estado=cita.estado,     
+        paciente_id=paciente_id 
     )
     
     # 3. La guardamos en la bóveda
@@ -142,57 +158,173 @@ def crear_cita(paciente_id: int, cita: schemas.CitaCreate, db: Session = Depends
     db.commit()
     db.refresh(nueva_cita)
     
-    # 4. Devolvemos el comprobante de la cita
     return nueva_cita
 
-# --- NUEVA VENTANILLA: OBTENER EL CALENDARIO MAESTRO ---
-# Fíjate que la ruta es simplemente /citas, no está amarrada a ningún paciente.
+
+# --- VENTANILLA 2: ACTUALIZAR UNA CITA (Para cuando le den al botón Editar) ---
+@app.put("/citas/{cita_id}", response_model=schemas.CitaOut)
+def actualizar_cita(cita_id: int, cita_actualizada: schemas.CitaCreate, db: Session = Depends(get_db)):
+    
+    # 1. Buscamos la cita exacta
+    cita_encontrada = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+    
+    if not cita_encontrada:
+        raise HTTPException(status_code=404, detail="Cita no encontrada")
+    
+    # 2. Reemplazamos todos los datos con lo que mandó React
+    cita_encontrada.motivo = cita_actualizada.motivo
+    cita_encontrada.fecha_cita = cita_actualizada.fecha_cita
+    cita_encontrada.urgencia = cita_actualizada.urgencia
+    cita_encontrada.estado = cita_actualizada.estado
+    
+    # 3. Guardamos los cambios
+    db.commit()
+    db.refresh(cita_encontrada)
+    
+    return cita_encontrada
+
+
+# --- VENTANILLA 3: ELIMINAR UNA CITA (Para cuando le den a la X roja) ---
+@app.delete("/citas/{cita_id}")
+def eliminar_cita(cita_id: int, db: Session = Depends(get_db)):
+    
+    cita_encontrada = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+    
+    if not cita_encontrada:
+        raise HTTPException(status_code=404, detail="Cita no encontrada")
+    
+    db.delete(cita_encontrada)
+    db.commit()
+    
+    return {"mensaje": "La cita fue eliminada exitosamente del calendario"}
+
+@app.get("/citas/alertas-activas")
+def obtener_alertas_activas(
+    horas: int = Query(24), 
+    db: Session = Depends(get_db)
+):
+    ahora = datetime.now()
+    limite_alerta = ahora + timedelta(hours=horas)
+    
+    # Traemos las citas en peligro
+    citas_criticas = db.query(models.Cita).filter(
+        models.Cita.fecha_cita >= ahora,
+        models.Cita.fecha_cita <= limite_alerta,
+        models.Cita.estado == "Pendiente"
+    ).all()
+    
+    respuesta = []
+    
+    for cita in citas_criticas:
+        paciente_db = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
+        
+        cita_dict = {
+            "id": cita.id,
+            "fecha_cita": cita.fecha_cita,
+            # 🌟 CORRECCIÓN: Como el motivo vive en reportes, aquí ponemos un texto genérico
+            "motivo_consulta": "Consulta Programada", 
+            "paciente": {
+                "nombre": paciente_db.nombre if paciente_db else "Paciente Desconocido"
+            }
+        }
+        respuesta.append(cita_dict)
+        
+    return respuesta
+
+# --- VENTANILLA 4: OBTENER EL CALENDARIO MAESTRO ---
 @app.get("/citas", response_model=List[schemas.CitaOut])
 def obtener_todas_las_citas(db: Session = Depends(get_db)):
-    
-    # Le decimos a la base de datos: "Tráeme TODAS las citas de la tabla, sin importar de quién sean"
+    # Tráeme TODAS las citas de la tabla para pintarlas en React
     lista_citas = db.query(models.Cita).all()
-    
     return lista_citas
+# --- VENTANILLA: OBTENER TODOS LOS REPORTES (Unidos con Paciente) ---
+# --- VENTANILLA: OBTENER TODOS LOS REPORTES (A prueba de balas) ---
+@app.get("/reportes", response_model=List[schemas.ReporteOut])
+def obtener_todos_los_reportes(db: Session = Depends(get_db)):
+    
+    # 1. Traemos todos los reportes crudos
+    db_reportes = db.query(models.Reporte).all()
+
+    respuesta = []
+    
+    # 2. Armamos la maleta a mano para que FastAPI no se confunda
+    for reporte in db_reportes:
+        # Buscamos quién es el dueño de este reporte
+        cita = db.query(models.Cita).filter(models.Cita.id == reporte.cita_id).first()
+        paciente = None
+        if cita:
+            paciente = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
+        
+        # Armamos el diccionario exacto que espera tu React
+        rep_dict = {
+            "id": reporte.id,
+            "motivo_consulta": reporte.motivo_consulta,
+            "notas_psicologo": reporte.notas_psicologo,
+            "pruebas_aplicadas": reporte.pruebas_aplicadas,
+            "analisis_ia": reporte.analisis_ia,
+            "diagnostico_final": reporte.diagnostico_final,
+            "recomendaciones": reporte.recomendaciones,
+            "plan_accion": reporte.plan_accion,
+            "fecha_generacion": reporte.fecha_generacion,
+            "cita_id": reporte.cita_id,
+            "paciente_data": paciente # Aquí va Dervin con su edad y teléfono
+        }
+        respuesta.append(rep_dict)
+
+    return respuesta
 
 
+# --- VENTANILLA: CREAR REPORTE (Con el PROMPT SÚPER DSM-5) ---
 @app.post("/citas/{cita_id}/reporte", response_model=schemas.ReporteOut)
 def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Session = Depends(get_db)):
     
-    # 1. Verificamos que la cita exista
-    cita_encontrada = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+    # 1. Verificaciones (Quedan igual)
+    cita_encontrada = db.query(models.Cita).options(
+        joinedload(models.Cita.paciente) # Traemos al paciente de una vez
+    ).filter(models.Cita.id == cita_id).first()
+    
     if not cita_encontrada:
         raise HTTPException(status_code=404, detail="Cita no encontrada")
 
-    # 2. Evitamos duplicados
     reporte_existente = db.query(models.Reporte).filter(models.Reporte.cita_id == cita_id).first()
     if reporte_existente:
-        raise HTTPException(status_code=400, detail="Esta cita ya tiene un reporte generado")
+        raise HTTPException(status_code=400, detail="Esta cita ya tiene un reporte")
 
-    # --- 3. LA MAGIA DE LA IA (El Cerebro de ALMA) ---
+    # 🌟 --- 2. EL NUEVO CEREBRO DE ALMA (Instrucciones Militares DSM-5) ---
     prompt_maestro = f"""
-    Actúa como un psicólogo clínico experto. Transforma estas notas crudas en un análisis para el expediente.
+    Actúa como un neuropsicólogo clínico senior con 20 años de experiencia. Tu tarea es analizar las notas de una sesión terapéutica y redactar un análisis técnico-profesional para el expediente médico electrónico.
+
+    CONTEXTO CLÍNICO PROPORCIONADO:
+    - Paciente: {cita_encontrada.paciente.nombre} (Edad: {cita_encontrada.paciente.edad or 'N/E'})
+    - Motivo de Consulta: {reporte.motivo_consulta}
+    - INSTRUMENTOS Y TÉCNICAS APLICADAS: {reporte.pruebas_aplicadas or 'Entrevista clínica semiestructurada'}
+    - Impresión Diagnóstica del Terapeuta: {reporte.diagnostico_final}
+    - NOTAS CRUDAS DE LA SESIÓN: "{reporte.notas_psicologo}"
+
+    REGLAS ESTRICTAS DE ANÁLISIS Y FORMATO:
+    1. INTEGRACIÓN DE INSTRUMENTOS (¡OBLIGATORIO!): Debes analizar críticamente cómo los síntomas descritos en las notas justifican o se relacionan con las técnicas e instrumentos aplicados ({reporte.pruebas_aplicadas}). Por ejemplo, si se aplicó el GAD-7, menciona cómo la sintomatología se correlaciona con la evaluación de la ansiedad.
+    2. DEBES insertar un DOBLE SALTO DE LÍNEA después de cada título (##). NUNCA inicies el párrafo en la misma línea del título.
+    3. Usa **negritas** para resaltar síntomas clave, síndromes, escalas o códigos del DSM-5.
+    4. Párrafos cortos y redacción clínica formal.
+
+    ESTRUCTURA DE SALIDA EXACTA:
+
+    ## 🔍 Análisis Sintomatológico y Observaciones Clínicas
     
-    REGLAS ESTRICTAS:
-    1. Sé extremadamente directo, breve y conciso.
-    2. Usa únicamente viñetas (bullet points).
-    3. Cero introducciones (no digas "Estimado colega" ni "Aquí tienes el resumen").
-    4. Cero conclusiones largas.
-    5. Máximo 2 líneas por punto.
+    (Párrafo descriptivo aquí. Integra los síntomas de las notas con la relevancia de haber aplicado los instrumentos seleccionados).
 
-    Estructura tu respuesta estrictamente con estos tres títulos:
-    ### 🔍 Observaciones Generales
-    ### 🧠 Impresión Diagnóstica Preliminar
-    ### 🎯 Recomendaciones
+    ## 🧠 Fundamentación Diagnóstica (Alineación DSM-5)
+    
+    (Justificación del diagnóstico con criterios del DSM-5/CIE-10. Resalta códigos y cómo las pruebas aportan validez al diagnóstico objetivo).
 
-    Notas crudas del psicólogo:
-    "{reporte.notas_psicologo}"
+    ## 🎯 Evaluación del Plan de Acción
+    
+    (Evaluación técnica de la viabilidad de las recomendaciones y próximos pasos).
     """
 
     try:
-        # Usamos la NUEVA sintaxis de Google y el modelo gemini-2.5-flash
-        # ¡IMPORTANTE! Pon tu API Key real aquí:
-        client = genai.Client(api_key="AIzaSyDe95wrUINgqN0WSl3xlbNpalSB9m6qGas")
+        # Usamos os.getenv como quedamos
+        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         
         respuesta_ia = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -201,21 +333,28 @@ def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Sess
         analisis_final = respuesta_ia.text
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al conectar con la IA: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error con IA: {str(e)}")
 
-    # --- 4. GUARDAR EN LA BÓVEDA ---
+    # 3. Guardar en la bóveda (Inyectamos los datos del paciente para la respuesta inmediata)
     nuevo_reporte = models.Reporte(
+        motivo_consulta=reporte.motivo_consulta,
         notas_psicologo=reporte.notas_psicologo,
-        cita_id=cita_id,
-        analisis_ia=analisis_final
+        pruebas_aplicadas=reporte.pruebas_aplicadas,
+        analisis_ia=analisis_final,
+        diagnostico_final=reporte.diagnostico_final,
+        recomendaciones=reporte.recomendaciones,
+        plan_accion=reporte.plan_accion,
+        cita_id=cita_id
     )
 
     db.add(nuevo_reporte)
     db.commit()
     db.refresh(nuevo_reporte)
     
+    # Le pegamos los datos del paciente al objeto para que la respuesta de FastAPI sea completa
+    nuevo_reporte.paciente_data = cita_encontrada.paciente
+    
     return nuevo_reporte
-
 
 # Ventanilla para crear la Clínica
 @app.post("/clinicas", response_model=schemas.ClinicaOut)
@@ -432,9 +571,3 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
     }
     
 
-# Le decimos que la respuesta de este endpoint será nuestro molde RespuestaIA
-@app.post("/api/analizar-sesion", response_model=RespuestaIA)
-def analizar_sesion(notas: str):
-    # Llamamos a la función que acabamos de crear
-    resultado_ia = analizar_notas_con_ia(notas)
-    return resultado_ia
