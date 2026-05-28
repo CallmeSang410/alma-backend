@@ -22,6 +22,7 @@ class Usuario(Base):
     
     clinica_id = Column(Integer, ForeignKey("clinicas.id"))
     clinica = relationship("Clinica", back_populates="usuarios")
+    anticipacion_alerta = Column(Integer, default=24) # Guardará 24, 48 o 72
 
 class Paciente(Base):
     __tablename__ = "pacientes"
@@ -52,18 +53,33 @@ class Cita(Base):
     id = Column(Integer, primary_key=True, index=True)
     motivo = Column(String)
     fecha_cita = Column(DateTime)
+    
+    # 🌟 NUEVAS GAVETAS PARA QUE COINCIDA CON TU DISEÑO:
+    urgencia = Column(String, default="Normal") 
+    estado = Column(String, default="Pendiente") 
+    
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
 
     paciente = relationship("Paciente", back_populates="citas")
-    
-    # 🌟 NUEVO: El espejo que el Reporte estaba buscando
     reporte = relationship("Reporte", back_populates="cita", uselist=False)
 
 class Reporte(Base):
     __tablename__ = "reportes"
     id = Column(Integer, primary_key=True, index=True)
+    
+    # Datos de entrada (Pasos 1 y 2)
+    motivo_consulta = Column(Text, nullable=True) 
     notas_psicologo = Column(Text)
+    pruebas_aplicadas = Column(String, nullable=True) # Ej: "GAD-7, BDI-II"
+    
+    # La magia de Gemini (Paso 3)
     analisis_ia = Column(Text, nullable=True)
+    
+    # Cierre profesional (Paso 4)
+    diagnostico_final = Column(String, nullable=True)
+    recomendaciones = Column(Text, nullable=True)
+    plan_accion = Column(String, nullable=True) # Ej: "Tratamiento Terapéutico"
+    
     fecha_generacion = Column(DateTime, default=datetime.now)
     
     cita_id = Column(Integer, ForeignKey("citas.id"), unique=True)
