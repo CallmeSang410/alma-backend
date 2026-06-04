@@ -117,22 +117,37 @@ def actualizar_paciente(paciente_id: int, paciente_actualizado: schemas.Paciente
 # Usamos @app.delete porque la acción es destructiva.
 @app.delete("/pacientes/{paciente_id}")
 def eliminar_paciente(paciente_id: int, db: Session = Depends(get_db)):
-    
     # 1. Buscamos al paciente
     paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
     
-    # 2. Si no existe, error 404
-    if paciente_encontrado is None:
+    if not paciente_encontrado:
         raise HTTPException(status_code=404, detail="El paciente no existe")
     
-    # 3. La ejecución de SQLAlchemy: "Bórralo de la tabla"
-    db.delete(paciente_encontrado)
-    
-    # 4. Guardamos los cambios para que sea permanente
-    db.commit()
-    
-    # 5. Devolvemos un mensaje de confirmación en lugar de los datos del paciente (porque ya no existen)
-    return {"mensaje": f"El paciente con ID {paciente_id} ha sido eliminado de ALMA exitosamente."}
+    try:
+        # 2. Buscamos todas las citas de este paciente
+        citas_del_paciente = db.query(models.Cita).filter(models.Cita.paciente_id == paciente_id).all()
+        
+        # 3. Borramos los REPORTES de esas citas primero (Las hojas del árbol)
+        for cita in citas_del_paciente:
+            db.query(models.Reporte).filter(models.Reporte.cita_id == cita.id).delete(synchronize_session=False)
+            
+        # 4. Ahora sí, borramos las CITAS (Las ramas)
+        db.query(models.Cita).filter(models.Cita.paciente_id == paciente_id).delete(synchronize_session=False)
+        
+        # 5. Borramos los EVENTOS de la línea de tiempo
+        db.query(models.EventoVida).filter(models.EventoVida.paciente_id == paciente_id).delete(synchronize_session=False)
+        
+        # 6. Finalmente, libre de amarras, borramos al PACIENTE (El tronco)
+        db.delete(paciente_encontrado)
+        
+        # Guardamos todos los cambios de un solo
+        db.commit()
+        return {"mensaje": f"El paciente {paciente_id} y todo su historial fue erradicado."}
+        
+    except Exception as e:
+        db.rollback() # Si algo falla, cancelamos todo para no dañar la BD
+        print(f"❌ ERROR NUCLEAR AL BORRAR: {e}")
+        raise HTTPException(status_code=500, detail="Error interno al borrar las dependencias del paciente.")
 
 # --- VENTANILLA 1: AGENDAR UNA CITA ---
 @app.post("/pacientes/{paciente_id}/citas", response_model=schemas.CitaOut)
@@ -146,12 +161,12 @@ def crear_cita(paciente_id: int, cita: schemas.CitaCreate, db: Session = Depends
     # 2. Creamos la cita conectándola con el paciente
     # 🌟 AHORA SÍ GUARDAMOS LA URGENCIA Y EL ESTADO 🌟
     nueva_cita = models.Cita(
-        motivo=cita.motivo, 
-        fecha_cita=cita.fecha_cita, 
-        urgencia=cita.urgencia, 
-        estado=cita.estado,     
-        paciente_id=paciente_id 
-    )
+    motivo=cita.motivo,
+    fecha_cita=cita.fecha_cita,
+    estado=cita.estado,
+    modalidad=cita.modalidad, # 🌟 GUARDANDO EL DATO
+    paciente_id=paciente_id
+)
     
     # 3. La guardamos en la bóveda
     db.add(nueva_cita)
@@ -274,13 +289,53 @@ def obtener_todos_los_reportes(db: Session = Depends(get_db)):
     return respuesta
 
 
-# --- VENTANILLA: CREAR REPORTE (Con el PROMPT SÚPER DSM-5) ---
+# 🌟 RUTA NUEVA: SE EJECUTA EN EL PASO 3 DE REACT
+# 🌟 RUTA NUEVA: SE EJECUTA EN EL PASO 3 DE REACT
+@app.post("/reportes/analizar")
+def generar_analisis_ia(datos: schemas.AnalisisIARequest):
+    prompt_maestro = f"""
+    Actúa como un neuropsicólogo clínico senior con 20 años de experiencia. Tu tarea es analizar las notas iniciales de una sesión terapéutica y redactar un análisis técnico-profesional para ayudar al psicólogo humano a formular su diagnóstico.
+
+    CONTEXTO CLÍNICO PROPORCIONADO:
+    - Motivo de Consulta: {datos.motivo_consulta}
+    - INSTRUMENTOS Y TÉCNICAS APLICADAS: {datos.pruebas_aplicadas or 'Entrevista clínica semiestructurada'}
+    - NOTAS CRUDAS DE LA SESIÓN: "{datos.notas_psicologo}"
+
+    REGLAS ESTRICTAS DE ANÁLISIS Y FORMATO:
+    1. INTEGRACIÓN DE INSTRUMENTOS (¡OBLIGATORIO!): Analiza críticamente cómo los síntomas se relacionan con los instrumentos aplicados.
+    2. DEBES insertar un DOBLE SALTO DE LÍNEA después de cada título (##). NUNCA inicies el párrafo en la misma línea del título.
+    3. Usa **negritas** para resaltar síntomas clave, síndromes, escalas o posibles códigos del DSM-5.
+    4. Limítate estrictamente a la impresión diagnóstica. NO sugieras planes de acción, recomendaciones ni tratamientos, eso es labor exclusiva del terapeuta.
+
+    ESTRUCTURA DE SALIDA EXACTA (Solo 2 secciones):
+
+    ## 🔍 Análisis Sintomatológico y Observaciones
+    
+    (Párrafo descriptivo integrando síntomas e instrumentos).
+
+    ## 🧠 Posibles Ejes Diagnósticos (Alineación DSM-5)
+    
+    (Sugiere posibles diagnósticos y códigos DSM-5 que el terapeuta debería considerar según las notas).
+    """
+
+    try:
+        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        respuesta_ia = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt_maestro
+        )
+        return {"analisis": respuesta_ia.text}
+    except Exception as e:
+        print(f"❌ Error en Gemini: {e}")
+        raise HTTPException(status_code=500, detail="Error interno de la IA")
+
+
+# 🌟 RUTA ACTUALIZADA: SE EJECUTA EN EL PASO 4 (Solo guarda los datos)
 @app.post("/citas/{cita_id}/reporte", response_model=schemas.ReporteOut)
 def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Session = Depends(get_db)):
     
-    # 1. Verificaciones (Quedan igual)
     cita_encontrada = db.query(models.Cita).options(
-        joinedload(models.Cita.paciente) # Traemos al paciente de una vez
+        joinedload(models.Cita.paciente)
     ).filter(models.Cita.id == cita_id).first()
     
     if not cita_encontrada:
@@ -290,57 +345,12 @@ def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Sess
     if reporte_existente:
         raise HTTPException(status_code=400, detail="Esta cita ya tiene un reporte")
 
-    # 🌟 --- 2. EL NUEVO CEREBRO DE ALMA (Instrucciones Militares DSM-5) ---
-    prompt_maestro = f"""
-    Actúa como un neuropsicólogo clínico senior con 20 años de experiencia. Tu tarea es analizar las notas de una sesión terapéutica y redactar un análisis técnico-profesional para el expediente médico electrónico.
-
-    CONTEXTO CLÍNICO PROPORCIONADO:
-    - Paciente: {cita_encontrada.paciente.nombre} (Edad: {cita_encontrada.paciente.edad or 'N/E'})
-    - Motivo de Consulta: {reporte.motivo_consulta}
-    - INSTRUMENTOS Y TÉCNICAS APLICADAS: {reporte.pruebas_aplicadas or 'Entrevista clínica semiestructurada'}
-    - Impresión Diagnóstica del Terapeuta: {reporte.diagnostico_final}
-    - NOTAS CRUDAS DE LA SESIÓN: "{reporte.notas_psicologo}"
-
-    REGLAS ESTRICTAS DE ANÁLISIS Y FORMATO:
-    1. INTEGRACIÓN DE INSTRUMENTOS (¡OBLIGATORIO!): Debes analizar críticamente cómo los síntomas descritos en las notas justifican o se relacionan con las técnicas e instrumentos aplicados ({reporte.pruebas_aplicadas}). Por ejemplo, si se aplicó el GAD-7, menciona cómo la sintomatología se correlaciona con la evaluación de la ansiedad.
-    2. DEBES insertar un DOBLE SALTO DE LÍNEA después de cada título (##). NUNCA inicies el párrafo en la misma línea del título.
-    3. Usa **negritas** para resaltar síntomas clave, síndromes, escalas o códigos del DSM-5.
-    4. Párrafos cortos y redacción clínica formal.
-
-    ESTRUCTURA DE SALIDA EXACTA:
-
-    ## 🔍 Análisis Sintomatológico y Observaciones Clínicas
-    
-    (Párrafo descriptivo aquí. Integra los síntomas de las notas con la relevancia de haber aplicado los instrumentos seleccionados).
-
-    ## 🧠 Fundamentación Diagnóstica (Alineación DSM-5)
-    
-    (Justificación del diagnóstico con criterios del DSM-5/CIE-10. Resalta códigos y cómo las pruebas aportan validez al diagnóstico objetivo).
-
-    ## 🎯 Evaluación del Plan de Acción
-    
-    (Evaluación técnica de la viabilidad de las recomendaciones y próximos pasos).
-    """
-
-    try:
-        # Usamos os.getenv como quedamos
-        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        
-        respuesta_ia = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt_maestro
-        )
-        analisis_final = respuesta_ia.text
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error con IA: {str(e)}")
-
-    # 3. Guardar en la bóveda (Inyectamos los datos del paciente para la respuesta inmediata)
+    # Ya no llamamos a Gemini aquí. Usamos el texto que generamos en el paso 3 y que React nos envió.
     nuevo_reporte = models.Reporte(
         motivo_consulta=reporte.motivo_consulta,
         notas_psicologo=reporte.notas_psicologo,
         pruebas_aplicadas=reporte.pruebas_aplicadas,
-        analisis_ia=analisis_final,
+        analisis_ia=reporte.analisis_ia, # 🌟 Guardamos directamente lo que vino de React
         diagnostico_final=reporte.diagnostico_final,
         recomendaciones=reporte.recomendaciones,
         plan_accion=reporte.plan_accion,
@@ -351,9 +361,7 @@ def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Sess
     db.commit()
     db.refresh(nuevo_reporte)
     
-    # Le pegamos los datos del paciente al objeto para que la respuesta de FastAPI sea completa
     nuevo_reporte.paciente_data = cita_encontrada.paciente
-    
     return nuevo_reporte
 
 # Ventanilla para crear la Clínica
@@ -381,25 +389,26 @@ def crear_usuario(usuario: schemas.UsuarioCreate, db: Session = Depends(get_db))
     # 2. Encriptamos la contraseña (¡NUNCA la guardes en texto plano!)
     hashed_pwd = pwd_context.hash(usuario.password)
 
-    # 3. Armamos al usuario rellenando los huecos para que PostgreSQL no se queje
+    # 3. 🌟 PRIMERO: Creamos la clínica con el nombre que mandó el usuario en el form
+    nueva_clinica = models.Clinica(nombre=usuario.nombre_clinica)
+    db.add(nueva_clinica)
+    db.commit()
+    db.refresh(nueva_clinica) # Esto hace que la BD le asigne su ID oficial (ej. 1, 2, 3...)
+
+    # 4. DESPUÉS: Armamos al usuario amarrándolo a la clínica recién creada
     nuevo_usuario = models.Usuario(
-        username=usuario.email, # El email de Dervin pasa a ser el username
+        username=usuario.email, 
         hashed_password=hashed_pwd,
-        rol="admin", # Le damos rol de administrador por defecto
-        clinica_id=1 # OJO: Por ahora lo metemos a la clínica #1 a la fuerza
+        rol=usuario.rol, # Usamos el rol que seleccionó en la pantalla
+        clinica_id=nueva_clinica.id, # 🌟 AQUÍ ESTÁ EL TRUCO: Usamos el ID real de arriba
+        anticipacion_alerta=24 # Asegurate de que tu modelo Usuario tenga este campo
     )
 
     db.add(nuevo_usuario)
     db.commit()
     db.refresh(nuevo_usuario)
     
-    return {"mensaje": "Usuario creado con éxito"}
-
-# La "contraseña maestra" de tu servidor para firmar los gafetes VIP. 
-# En un proyecto real esto se esconde, pero para pruebas está bien aquí.
-SECRETO_ALMA = "super_secreto_para_gafetes_123" 
-# Instanciamos el escudo de seguridad
-security = HTTPBearer()
+    return {"mensaje": "Usuario y Clínica creados con éxito"}
 
 # Este es el Cadenero Oficial de ALMA
 def obtener_usuario_actual(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
