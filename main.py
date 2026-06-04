@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List
 import models, schemas
 from database import engine, get_db
-from google import genai  # Solo la importación, sin el configure
 import bcrypt
 import jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -19,6 +18,8 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware # <-- Asegurate de importar esto
 from datetime import datetime, timedelta
 from fastapi import Query
+import google.generativeai as genai
+
 app = FastAPI()
 
 # 🌟 ESTA ES LA PUERTA ABIERTA PARA REACT
@@ -34,6 +35,13 @@ app.add_middleware(
 
 
 load_dotenv() # Esto lee tu archivo .env
+
+api_key = os.getenv("GEMINI_API_KEY")
+
+if api_key:
+    genai.configure(api_key=api_key)
+else:
+    print("⚠️ ADVERTENCIA: No se encontró GEMINI_API_KEY en el archivo .env")
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
@@ -579,4 +587,44 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
         "tu_gafete_digital": token_vip
     }
     
+
+    # 2. Le damos a la IA su "Personalidad" y el conocimiento de ALMA
+instrucciones_alma = """
+Eres el asistente virtual oficial de soporte técnico del sistema ALMA (HorizonFlow).
+Tu objetivo es ayudar a psicólogos y administradores clínicos a usar la plataforma.
+
+Conoces las siguientes funcionalidades clave del sistema:
+1. Directorio de Pacientes: Permite agregar pacientes, ver su expediente, editar su perfil y eliminarlos de forma segura.
+2. Expediente Clínico: Contiene la información de contacto, la línea de tiempo gráfica (Historial Evolutivo) y el historial de reportes.
+3. Reportes IA: El sistema permite estructurar notas clínicas usando IA para generar análisis y diagnósticos.
+4. Ajustes: Permite cambiar entre Tema Claro/Oscuro, ajustar el tamaño de texto, establecer alertas de 24/48/72 horas y reportar bugs.
+
+Reglas:
+- Sé amable, conciso y muy profesional. Dirígete al usuario de forma respetuosa.
+- Si preguntan sobre cómo funciona algo, explícalo en pasos cortos.
+- Eres soporte técnico de software: NO des consejos médicos, diagnósticos o terapia a pacientes.
+"""
+
+# IMPORTANTE: Usamos la versión de Gemini más reciente y actualizada disponible
+modelo_soporte = genai.GenerativeModel(
+    model_name='gemini-2.5-flash', 
+    system_instruction=instrucciones_alma
+)
+
+# 3. LA VENTANILLA DE CONEXIÓN CON REACT
+@app.post("/soporte/chat")
+def chat_soporte_alma(request: schemas.ChatRequest):
+    if not api_key:
+        raise HTTPException(status_code=500, detail="El servidor no tiene configurada la API Key de Gemini.")
+        
+    try:
+        # Enviamos el mensaje del usuario al modelo
+        respuesta = modelo_soporte.generate_content(request.mensaje)
+        
+        # Devolvemos el texto generado hacia la interfaz de React
+        return {"respuesta": respuesta.text}
+        
+    except Exception as e:
+        print(f"❌ Error en Gemini: {e}")
+        raise HTTPException(status_code=500, detail="El asistente está descansando en este momento. Intenta de nuevo más tarde.")
 
