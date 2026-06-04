@@ -139,3 +139,7 @@ class EventoVidaOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+        # --- MOLDES PARA EL CHAT DE SOPORTE ---
+class ChatRequest(BaseModel):
+    mensaje: str
