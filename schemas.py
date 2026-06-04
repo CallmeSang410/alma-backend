@@ -22,16 +22,16 @@ class PacienteCreate(PacienteBase):
 class CitaCreate(BaseModel):
     motivo: str
     fecha_cita: datetime 
-    urgencia: str
     estado: str
+    modalidad: str # 🌟 ¡NUEVO CAMPO: Presencial, Virtual, A domicilio!
 
 # Molde de SALIDA (Lo que le devolvemos a React para pintar las tarjetas)
 class CitaOut(BaseModel):
     id: int
     motivo: str
     fecha_cita: datetime
-    urgencia: str
     estado: str
+    modalidad: str # 🌟 ¡NUEVO CAMPO!
     paciente_id: int
 
     class Config:
@@ -51,9 +51,15 @@ class ReporteCreate(BaseModel):
     motivo_consulta: str
     notas_psicologo: str
     pruebas_aplicadas: Optional[str] = None
+    analisis_ia: str # 🌟 AÑADÍ ESTO: Ahora React nos manda el análisis
     diagnostico_final: str
     recomendaciones: str
     plan_accion: str
+
+class AnalisisIARequest(BaseModel):
+    motivo_consulta: str
+    notas_psicologo: str
+    pruebas_aplicadas: str
 
 # --- Agregá este molde nuevo arriba en schemas.py ---
 class PacienteParaReporte(BaseModel):
@@ -96,9 +102,10 @@ class ClinicaOut(BaseModel):
         from_attributes = True
 
 class UsuarioCreate(BaseModel):
+    nombre_clinica: str  
     email: str
-    password: str # El usuario manda texto plano
-    rol: str = "psicologo"
+    password: str
+    rol: str  # Le quitamos el = "psicologo" para que obligue a React a mandar el rol real
 
 
 class UsuarioOut(BaseModel):

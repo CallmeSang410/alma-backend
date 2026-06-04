@@ -32,21 +32,19 @@ class Paciente(Base):
     telefono = Column(String, nullable=True)
     email = Column(String, index=True, nullable=True)
     edad = Column(Integer, nullable=True)
+    sexo = Column(String, nullable=True) # 🌟 NUEVO: Para guardar el dato del frontend
     estado = Column(String, nullable=True)
     diagnostico_principal = Column(String, nullable=True)
     clinica_id = Column(Integer, ForeignKey("clinicas.id"))
     
-    # La relación que ya arreglamos antes
     clinica = relationship("Clinica", back_populates="pacientes")
     
-    # 🌟 AGREGA ESTA LÍNEA QUE ES LA QUE TE FALTA:
-    # Le dice a SQLAlchemy: "Un paciente tiene muchas citas, y en la tabla Cita la propiedad se llama 'paciente'"
-    citas = relationship("Cita", back_populates="paciente")
-    # (Tus otras columnas y relaciones de Paciente...)
-    citas = relationship("Cita", back_populates="paciente")
+    # 🌟 MODO THANOS: cascade="all, delete-orphan" elimina todas las citas al borrar al paciente
+    citas = relationship("Cita", back_populates="paciente", cascade="all, delete-orphan")
     
-    # 🌟 NUEVO: Para la línea de tiempo de HorizonFlow
-    eventos = relationship("EventoVida", back_populates="paciente")
+    # 🌟 MODO THANOS: También elimina sus eventos de la línea de tiempo
+    eventos = relationship("EventoVida", back_populates="paciente", cascade="all, delete-orphan")
+
 class Cita(Base):
     __tablename__ = "citas"
 
@@ -54,14 +52,15 @@ class Cita(Base):
     motivo = Column(String)
     fecha_cita = Column(DateTime)
     
-    # 🌟 NUEVAS GAVETAS PARA QUE COINCIDA CON TU DISEÑO:
     urgencia = Column(String, default="Normal") 
     estado = Column(String, default="Pendiente") 
+    modalidad = Column(String, default="Presencial") # 🌟 NUEVO: Virtual, Presencial, etc.
     
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
 
     paciente = relationship("Paciente", back_populates="citas")
-    reporte = relationship("Reporte", back_populates="cita", uselist=False)
+    # 🌟 MODO THANOS: Si se borra la cita, también se borra el reporte asociado
+    reporte = relationship("Reporte", back_populates="cita", uselist=False, cascade="all, delete-orphan")
 
 class Reporte(Base):
     __tablename__ = "reportes"
@@ -95,6 +94,4 @@ class EventoVida(Base):
     impacto = Column(String) 
     
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
-    
-    # 🌟 NUEVO: El espejo para conectar con el Paciente
     paciente = relationship("Paciente", back_populates="eventos")
