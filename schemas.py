@@ -9,6 +9,7 @@ class PacienteBase(BaseModel):
     email: Optional[str] = None
     edad: Optional[int] = None
     estado: Optional[str] = "Activo"
+    sexo: Optional[str] = None # 🌟 Tiene que estar aquí para que lo acepte
     diagnostico_principal: Optional[str] = None
 
 # 2. Lo que exigimos cuando crean/editan uno nuevo
@@ -140,6 +141,11 @@ class EventoVidaOut(BaseModel):
     class Config:
         from_attributes = True
 
-        # --- MOLDES PARA EL CHAT DE SOPORTE ---
-class ChatRequest(BaseModel):
-    mensaje: str
+from typing import List
+
+class MensajeChat(BaseModel):
+    role: str
+    texto: str
+
+class ChatbotRequest(BaseModel):
+    historial: List[MensajeChat]

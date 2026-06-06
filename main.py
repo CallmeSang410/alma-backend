@@ -113,6 +113,7 @@ def actualizar_paciente(paciente_id: int, paciente_actualizado: schemas.Paciente
     paciente_encontrado.email = paciente_actualizado.email
     paciente_encontrado.edad = paciente_actualizado.edad
     paciente_encontrado.estado = paciente_actualizado.estado
+    paciente_encontrado.sexo = paciente_actualizado.sexo # 🌟 AGREGÁ ESTA LÍNEA AQUÍ
     paciente_encontrado.diagnostico_principal = paciente_actualizado.diagnostico_principal
     
     # 3. Guardamos los cambios
@@ -298,7 +299,7 @@ def obtener_todos_los_reportes(db: Session = Depends(get_db)):
 
 
 # 🌟 RUTA NUEVA: SE EJECUTA EN EL PASO 3 DE REACT
-# 🌟 RUTA NUEVA: SE EJECUTA EN EL PASO 3 DE REACT
+
 @app.post("/reportes/analizar")
 def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     prompt_maestro = f"""
@@ -327,15 +328,21 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     """
 
     try:
-        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        respuesta_ia = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt_maestro
-        )
+        # 1. Configuración a la vieja escuela (la que sí te funciona)
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        
+        # 2. Inicializamos el modelo de IA
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        
+        # 3. Mandamos el prompt a la cocina
+        respuesta_ia = model.generate_content(prompt_maestro)
+        
+        # 4. Devolvemos el texto a React
         return {"analisis": respuesta_ia.text}
+        
     except Exception as e:
-        print(f"❌ Error en Gemini: {e}")
-        raise HTTPException(status_code=500, detail="Error interno de la IA")
+        print(f"❌ Error en Gemini (Reportes): {e}")
+        raise HTTPException(status_code=500, detail="Error interno al procesar el análisis de IA")
 
 
 # 🌟 RUTA ACTUALIZADA: SE EJECUTA EN EL PASO 4 (Solo guarda los datos)
@@ -588,43 +595,54 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
     }
     
 
-    # 2. Le damos a la IA su "Personalidad" y el conocimiento de ALMA
-instrucciones_alma = """
-Eres el asistente virtual oficial de soporte técnico del sistema ALMA (HorizonFlow).
-Tu objetivo es ayudar a psicólogos y administradores clínicos a usar la plataforma.
-
-Conoces las siguientes funcionalidades clave del sistema:
-1. Directorio de Pacientes: Permite agregar pacientes, ver su expediente, editar su perfil y eliminarlos de forma segura.
-2. Expediente Clínico: Contiene la información de contacto, la línea de tiempo gráfica (Historial Evolutivo) y el historial de reportes.
-3. Reportes IA: El sistema permite estructurar notas clínicas usando IA para generar análisis y diagnósticos.
-4. Ajustes: Permite cambiar entre Tema Claro/Oscuro, ajustar el tamaño de texto, establecer alertas de 24/48/72 horas y reportar bugs.
-
-Reglas:
-- Sé amable, conciso y muy profesional. Dirígete al usuario de forma respetuosa.
-- Si preguntan sobre cómo funciona algo, explícalo en pasos cortos.
-- Eres soporte técnico de software: NO des consejos médicos, diagnósticos o terapia a pacientes.
-"""
-
-# IMPORTANTE: Usamos la versión de Gemini más reciente y actualizada disponible
-modelo_soporte = genai.GenerativeModel(
-    model_name='gemini-2.5-flash', 
-    system_instruction=instrucciones_alma
-)
-
-# 3. LA VENTANILLA DE CONEXIÓN CON REACT
+# 🌟 LA VENTANILLA ÚNICA DEL CHATBOT DE SOPORTE HORIZONFLOW
 @app.post("/soporte/chat")
-def chat_soporte_alma(request: schemas.ChatRequest):
-    if not api_key:
-        raise HTTPException(status_code=500, detail="El servidor no tiene configurada la API Key de Gemini.")
-        
-    try:
-        # Enviamos el mensaje del usuario al modelo
-        respuesta = modelo_soporte.generate_content(request.mensaje)
-        
-        # Devolvemos el texto generado hacia la interfaz de React
-        return {"respuesta": respuesta.text}
-        
-    except Exception as e:
-        print(f"❌ Error en Gemini: {e}")
-        raise HTTPException(status_code=500, detail="El asistente está descansando en este momento. Intenta de nuevo más tarde.")
+def chat_soporte_alma(request: schemas.ChatbotRequest):
+    instrucciones = """
+    Eres el asistente virtual oficial de soporte técnico del sistema HorizonFlow.
+    Tu objetivo es ayudar a psicólogos y administradores clínicos a usar la plataforma.
 
+    Conoces las siguientes funcionalidades clave del sistema:
+    1. Directorio de Pacientes: Permite agregar pacientes, ver su expediente, editar su perfil y eliminarlos de forma segura.
+    2. Expediente Clínico: Contiene la información de contacto, la línea de tiempo gráfica (Historial Evolutivo) y el historial de reportes.
+    3. Reportes IA: El sistema permite estructurar notas clínicas usando IA para generar análisis y diagnósticos.
+    4. Ajustes: Permite cambiar entre Tema Claro/Oscuro, ajustar el tamaño de texto, establecer alertas de 24/48/72 horas y reportar bugs.
+
+    Reglas:
+    - Sé amable, conciso y muy profesional. Dirígete al usuario de forma respetuosa.
+    - Si preguntan sobre cómo funciona algo, explícalo en pasos cortos o viñetas.
+    - Eres soporte técnico de software: NO des consejos médicos, diagnósticos o terapia a pacientes.
+    """
+
+    try:
+        # 1. Configuramos la llave (Estilo clásico)
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        
+        # 2. Inicializamos el modelo con la personalidad de soporte
+        model = genai.GenerativeModel(
+            model_name='gemini-2.5-flash',
+            system_instruction=instrucciones
+        )
+        
+        # 3. Formateamos la memoria del chat (ignoramos el saludo inicial)
+        historial_gemini = []
+        for msg in request.historial[1:-1]:
+            historial_gemini.append({
+                "role": "user" if msg.role == "user" else "model",
+                "parts": [msg.texto]
+            })
+
+        # 4. Agarramos la pregunta nuevecita del usuario
+        ultimo_mensaje = request.historial[-1].texto
+
+        # 5. Generamos la respuesta con todo el contexto
+        respuesta_ia = model.generate_content(
+            contents=historial_gemini + [{"role": "user", "parts": [ultimo_mensaje]}]
+        )
+
+        # 6. Se lo devolvemos a React
+        return {"respuesta": respuesta_ia.text}
+
+    except Exception as e:
+        print(f"❌ Error en Chatbot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
