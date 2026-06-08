@@ -166,7 +166,7 @@ class EncuestaCreate(BaseModel):
     q8_confianza_seguridad: str
     q9_indice_recomendacion: str
     q10_comentarios: Optional[str] = None
-    cita_id: Optional[int] = None
+    
 
 # Cuando React pide las encuestas (con todos los datos)
 class EncuestaOut(EncuestaCreate):
