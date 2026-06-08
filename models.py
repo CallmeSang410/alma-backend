@@ -23,6 +23,7 @@ class Usuario(Base):
     clinica_id = Column(Integer, ForeignKey("clinicas.id"))
     clinica = relationship("Clinica", back_populates="usuarios")
     anticipacion_alerta = Column(Integer, default=24) # Guardará 24, 48 o 72
+    encuestas = relationship("EncuestaExperiencia", back_populates="usuario")
 
 class Paciente(Base):
     __tablename__ = "pacientes"
@@ -90,8 +91,41 @@ class EventoVida(Base):
     id = Column(Integer, primary_key=True, index=True)
     titulo = Column(String, nullable=False)
     fecha_evento = Column(String, nullable=False) 
-    descripcion = Column(Text) 
+    descripcion = Column(Text, nullable=True) # Tu descripción original intacta
     impacto = Column(String) 
+    
+    # 🌟 NUEVAS COLUMNAS EXCLUSIVAS PARA LA BURBUJA
+    nota_titulo = Column(String, nullable=True) 
+    nota_contenido = Column(Text, nullable=True)
     
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
     paciente = relationship("Paciente", back_populates="eventos")
+
+class EncuestaExperiencia(Base):
+    __tablename__ = "encuestas_experiencia"
+
+    id = Column(Integer, primary_key=True, index=True)
+    fecha_generacion = Column(DateTime, default=datetime.utcnow)
+    
+    # --- LAS 10 PREGUNTAS DEL DASHBOARD ---
+    q1_satisfaccion_general = Column(Integer) # 1 a 5 estrellas
+    q2_cumplimiento_expectativas = Column(String) # "Superó ampliamente", etc.
+    q3_empatia_conexion = Column(String) # "Sí, en todo momento", etc.
+    q4_aspectos_valorados = Column(String) # "Escucha activa", "Puntualidad" (puede ser texto separado por comas)
+    q5_instalaciones = Column(Integer) # 1 a 5 estrellas
+    q6_claridad_pautas = Column(String) # "Totalmente claras", etc.
+    q7_impacto_animo = Column(String) # "Mucho mejor", etc.
+    q8_confianza_seguridad = Column(String) # "Completamente seguro", etc.
+    q9_indice_recomendacion = Column(String) # "Definitivamente", etc.
+    q10_comentarios = Column(Text, nullable=True) # "Me sentí muy seguro..."
+    
+    # Análisis de sentimiento (Positivo, Negativo, Sugerencia)
+    tipo_comentario = Column(String, default="NEUTRO") 
+
+    # --- RELACIONES ---
+    # ¿A qué psicólogo le hicieron esta encuesta?
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    usuario = relationship("Usuario", back_populates="encuestas")
+
+    # (Opcional) ¿De qué cita fue?
+    cita_id = Column(Integer, ForeignKey("citas.id"), nullable=True)

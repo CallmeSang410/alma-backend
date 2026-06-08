@@ -4,13 +4,12 @@ from typing import List
 import models, schemas
 from database import engine, get_db
 import bcrypt
-import jwt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from test_ia import analizar_notas_con_ia
 from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer
-import jwt
+from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import os
@@ -74,7 +73,35 @@ app.add_middleware(
     allow_headers=["*"], # Permite todos los headers (incluyendo nuestro Token)
 )
 
-
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Credenciales inválidas o sesión expirada",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        # 1. Abrimos el gafete digital que mandó React usando tu llave secreta
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        
+        # 2. Extraemos la variable EXACTA que pusiste en tu login
+        usuario_id: int = payload.get("usuario_id")
+        
+        if usuario_id is None:
+            raise credentials_exception
+            
+    except JWTError:
+        # Si el token es falso o expiró, lo pateamos
+        raise credentials_exception
+        
+    # 3. Buscamos al usuario en la BD usando su ID
+    usuario_db = db.query(models.Usuario).filter(models.Usuario.id == usuario_id).first()
+    
+    if usuario_db is None:
+        raise credentials_exception
+        
+    # 4. Devolvemos el perfil completo del psicólogo que está usando el sistema
+    return usuario_db
 
 
 
@@ -255,31 +282,42 @@ def obtener_alertas_activas(
         
     return respuesta
 
-# --- VENTANILLA 4: OBTENER EL CALENDARIO MAESTRO ---
-@app.get("/citas", response_model=List[schemas.CitaOut])
-def obtener_todas_las_citas(db: Session = Depends(get_db)):
-    # Tráeme TODAS las citas de la tabla para pintarlas en React
-    lista_citas = db.query(models.Cita).all()
-    return lista_citas
-# --- VENTANILLA: OBTENER TODOS LOS REPORTES (Unidos con Paciente) ---
-# --- VENTANILLA: OBTENER TODOS LOS REPORTES (A prueba de balas) ---
+@app.get("/citas")
+def obtener_citas(
+    db: Session = Depends(get_db), 
+    current_user: models.Usuario = Depends(get_current_user) # 🌟 Exigimos el usuario logueado
+):
+    # Filtramos: Solo dame las citas donde el dueño del paciente sea el psicólogo actual
+    citas = (
+        db.query(models.Cita)
+        .join(models.Paciente)
+        .filter(models.Paciente.clinica_id == current_user.clinica_id)
+        .all()
+    )
+    return citas
 @app.get("/reportes", response_model=List[schemas.ReporteOut])
-def obtener_todos_los_reportes(db: Session = Depends(get_db)):
-    
-    # 1. Traemos todos los reportes crudos
-    db_reportes = db.query(models.Reporte).all()
+def obtener_todos_los_reportes(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user) # 🛡️ Candado
+):
+    # 1. Filtramos los reportes desde la BD usando los joins
+    db_reportes = (
+        db.query(models.Reporte)
+        .join(models.Cita)
+        .join(models.Paciente)
+        .filter(models.Paciente.clinica_id == current_user.clinica_id)
+        .all()
+    )
 
     respuesta = []
     
-    # 2. Armamos la maleta a mano para que FastAPI no se confunda
+    # 2. Armamos la maleta a mano con TU código original para ir a lo seguro
     for reporte in db_reportes:
-        # Buscamos quién es el dueño de este reporte
         cita = db.query(models.Cita).filter(models.Cita.id == reporte.cita_id).first()
         paciente = None
         if cita:
             paciente = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
         
-        # Armamos el diccionario exacto que espera tu React
         rep_dict = {
             "id": reporte.id,
             "motivo_consulta": reporte.motivo_consulta,
@@ -291,7 +329,7 @@ def obtener_todos_los_reportes(db: Session = Depends(get_db)):
             "plan_accion": reporte.plan_accion,
             "fecha_generacion": reporte.fecha_generacion,
             "cita_id": reporte.cita_id,
-            "paciente_data": paciente # Aquí va Dervin con su edad y teléfono
+            "paciente_data": paciente # Tu lógica original intacta
         }
         respuesta.append(rep_dict)
 
@@ -522,56 +560,48 @@ def crear_evento_vida(paciente_id: int, evento: schemas.EventoVidaCreate, db: Se
     return nuevo_evento
 
 
-# --- VENTANILLA: OBTENER LA LÍNEA DE TIEMPO COMPLETA ---
+# 🌟 OBTENER TODOS LOS EVENTOS DE UN PACIENTE
 @app.get("/pacientes/{paciente_id}/eventos", response_model=List[schemas.EventoVidaOut])
-def obtener_linea_tiempo(paciente_id: int, db: Session = Depends(get_db)):
-    # 1. Buscamos todos los eventos de este paciente específico
-    # Y los ordenamos (.order_by) por fecha para que la línea de tiempo tenga sentido cronológico
-    eventos = db.query(models.EventoVida)\
-                .filter(models.EventoVida.paciente_id == paciente_id)\
-                .order_by(models.EventoVida.fecha_evento.asc())\
-                .all()
-    
-    return eventos
+def obtener_eventos_paciente(paciente_id: int, db: Session = Depends(get_db)):
+    return db.query(models.EventoVida).filter(models.EventoVida.paciente_id == paciente_id).all()
 
-# --- VENTANILLA: MODIFICAR UN EVENTO (UPDATE) ---
+# 🌟 CREAR UN NUEVO EVENTO
+@app.post("/pacientes/{paciente_id}/eventos", response_model=schemas.EventoVidaOut)
+def crear_evento_paciente(paciente_id: int, evento: schemas.EventoVidaCreate, db: Session = Depends(get_db)):
+    nuevo_evento = models.EventoVida(**evento.dict(), paciente_id=paciente_id)
+    db.add(nuevo_evento)
+    db.commit()
+    db.refresh(nuevo_evento)
+    return nuevo_evento
+
 @app.put("/eventos/{evento_id}", response_model=schemas.EventoVidaOut)
 def actualizar_evento(evento_id: int, evento_actualizado: schemas.EventoVidaCreate, db: Session = Depends(get_db)):
+    evento_db = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
+    if not evento_db:
+        raise HTTPException(status_code=404, detail="Evento no encontrado")
     
-    # 1. Buscamos el evento exacto en la base de datos
-    evento_encontrado = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
+    evento_db.titulo = evento_actualizado.titulo
+    evento_db.fecha_evento = evento_actualizado.fecha_evento
+    evento_db.descripcion = evento_actualizado.descripcion
+    evento_db.impacto = evento_actualizado.impacto
     
-    if not evento_encontrado:
-        raise HTTPException(status_code=404, detail="El evento no existe")
-        
-    # 2. Reemplazamos los datos viejos con los nuevos que nos mandó el frontend
-    evento_encontrado.titulo = evento_actualizado.titulo
-    evento_encontrado.fecha_evento = evento_actualizado.fecha_evento
-    evento_encontrado.descripcion = evento_actualizado.descripcion
-    evento_encontrado.impacto = evento_actualizado.impacto
+    # 🌟 GUARDAMOS LAS NOTAS
+    evento_db.nota_titulo = evento_actualizado.nota_titulo
+    evento_db.nota_contenido = evento_actualizado.nota_contenido
     
-    # 3. Guardamos los cambios
     db.commit()
-    db.refresh(evento_encontrado)
-    
-    return evento_encontrado
+    db.refresh(evento_db)
+    return evento_db
 
-# --- VENTANILLA: BORRAR UN EVENTO (DELETE) ---
+# 🌟 ELIMINAR UN EVENTO
 @app.delete("/eventos/{evento_id}")
 def eliminar_evento(evento_id: int, db: Session = Depends(get_db)):
-    
-    # 1. Buscamos el evento
-    evento_encontrado = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
-    
-    if not evento_encontrado:
-        raise HTTPException(status_code=404, detail="El evento no existe")
-        
-    # 2. Le damos la orden a SQLAlchemy de borrarlo
-    db.delete(evento_encontrado)
+    evento_db = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
+    if not evento_db:
+        raise HTTPException(status_code=404, detail="Evento no encontrado")
+    db.delete(evento_db)
     db.commit()
-    
-    # 3. Devolvemos un mensaje de éxito para que React sepa que ya no existe
-    return {"mensaje": f"El evento '{evento_encontrado.titulo}' ha sido eliminado exitosamente del historial."}
+    return {"detail": "Evento eliminado de forma definitiva"}
 
 @app.post("/login")
 def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get_db)):
@@ -646,3 +676,39 @@ def chat_soporte_alma(request: schemas.ChatbotRequest):
     except Exception as e:
         print(f"❌ Error en Chatbot: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+# 1. RUTA PARA GUARDAR UNA ENCUESTA NUEVA
+# 🌟 RUTA PÚBLICA (Sin el candado de current_user)
+@app.post("/encuestas/publica/{psicologo_id}")
+def crear_encuesta_publica(
+    psicologo_id: int, 
+    encuesta: schemas.EncuestaCreate, 
+    db: Session = Depends(get_db)
+):
+    # Lógica para determinar el tipo de comentario
+    tipo_com = "NEUTRO"
+    if encuesta.q1_satisfaccion_general >= 4:
+        tipo_com = "POSITIVO"
+    elif encuesta.q1_satisfaccion_general <= 2:
+        tipo_com = "NEGATIVO"
+
+    # Guardamos la encuesta usando el ID que viene en la URL
+    nueva_encuesta = models.EncuestaExperiencia(
+        **encuesta.dict(),
+        tipo_comentario=tipo_com,
+        usuario_id=psicologo_id # 🌟 Aquí está la magia de la conexión anónima
+    )
+    
+    db.add(nueva_encuesta)
+    db.commit()
+    return {"mensaje": "Feedback anónimo enviado con éxito"}
+
+# 2. RUTA PARA OBTENER TODAS LAS ENCUESTAS DEL PSICÓLOGO
+@app.get("/encuestas", response_model=List[schemas.EncuestaOut])
+def obtener_encuestas(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user) # 🛡️ Candado Multi-tenant
+):
+    # Solo traemos las encuestas de este psicólogo
+    encuestas = db.query(models.EncuestaExperiencia).filter(models.EncuestaExperiencia.usuario_id == current_user.id).all()
+    return encuestas
