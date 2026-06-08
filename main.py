@@ -222,11 +222,11 @@ def actualizar_cita(cita_id: int, cita_actualizada: schemas.CitaCreate, db: Sess
     if not cita_encontrada:
         raise HTTPException(status_code=404, detail="Cita no encontrada")
     
-    # 2. Reemplazamos todos los datos con lo que mandó React
+    # 2. Reemplazamos todos los datos con lo que mandó React (¡Adiós urgencia, hola modalidad!)
     cita_encontrada.motivo = cita_actualizada.motivo
     cita_encontrada.fecha_cita = cita_actualizada.fecha_cita
-    cita_encontrada.urgencia = cita_actualizada.urgencia
     cita_encontrada.estado = cita_actualizada.estado
+    cita_encontrada.modalidad = cita_actualizada.modalidad # 🌟 Agregamos el campo nuevo
     
     # 3. Guardamos los cambios
     db.commit()
@@ -249,16 +249,22 @@ def eliminar_cita(cita_id: int, db: Session = Depends(get_db)):
     
     return {"mensaje": "La cita fue eliminada exitosamente del calendario"}
 
+# Importá get_current_user si no lo tenés en este bloque
+# from dependencias import get_current_user
+
 @app.get("/citas/alertas-activas")
 def obtener_alertas_activas(
     horas: int = Query(24), 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user) # 🛡️ Candado activo
 ):
     ahora = datetime.now()
     limite_alerta = ahora + timedelta(hours=horas)
     
-    # Traemos las citas en peligro
-    citas_criticas = db.query(models.Cita).filter(
+    # 🌟 CORRECCIÓN: Unimos la tabla Cita con Paciente usando .join()
+    # Así podemos filtrar usando el usuario_id que vive dentro de Paciente
+    citas_criticas = db.query(models.Cita).join(models.Paciente).filter(
+        models.Paciente.clinica_id == current_user.clinica_id, # 🛡️ Candado Multi-tenant seguro
         models.Cita.fecha_cita >= ahora,
         models.Cita.fecha_cita <= limite_alerta,
         models.Cita.estado == "Pendiente"
@@ -267,13 +273,14 @@ def obtener_alertas_activas(
     respuesta = []
     
     for cita in citas_criticas:
+        # Aquí ya tenés la lógica de mapeo igualita a la de antes
         paciente_db = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
         
         cita_dict = {
             "id": cita.id,
             "fecha_cita": cita.fecha_cita,
-            # 🌟 CORRECCIÓN: Como el motivo vive en reportes, aquí ponemos un texto genérico
-            "motivo_consulta": "Consulta Programada", 
+            "motivo_consulta": cita.motivo or "Consulta Programada", 
+            "modalidad": cita.modalidad or "No especificada",
             "paciente": {
                 "nombre": paciente_db.nombre if paciente_db else "Paciente Desconocido"
             }

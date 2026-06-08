@@ -53,7 +53,6 @@ class Cita(Base):
     motivo = Column(String)
     fecha_cita = Column(DateTime)
     
-    urgencia = Column(String, default="Normal") 
     estado = Column(String, default="Pendiente") 
     modalidad = Column(String, default="Presencial") # 🌟 NUEVO: Virtual, Presencial, etc.
     
