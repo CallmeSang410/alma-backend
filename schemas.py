@@ -126,16 +126,20 @@ class UsuarioLogin(BaseModel):
 class EventoVidaCreate(BaseModel):
     titulo: str
     fecha_evento: str
-    descripcion: str
+    descripcion: Optional[str] = None
     impacto: str
+    nota_titulo: Optional[str] = None      # 🌟 NUEVO
+    nota_contenido: Optional[str] = None   # 🌟 NUEVO
+    
 
-# Molde para cuando le ENVIAMOS los eventos a Dervin (React)
 class EventoVidaOut(BaseModel):
     id: int
     titulo: str
     fecha_evento: str
-    descripcion: str
+    descripcion: Optional[str] = None
     impacto: str
+    nota_titulo: Optional[str] = None      # 🌟 NUEVO
+    nota_contenido: Optional[str] = None   # 🌟 NUEVO
     paciente_id: int
 
     class Config:
@@ -149,3 +153,27 @@ class MensajeChat(BaseModel):
 
 class ChatbotRequest(BaseModel):
     historial: List[MensajeChat]
+    
+# Cuando el paciente manda la encuesta
+class EncuestaCreate(BaseModel):
+    q1_satisfaccion_general: int
+    q2_cumplimiento_expectativas: str
+    q3_empatia_conexion: str
+    q4_aspectos_valorados: str
+    q5_instalaciones: int
+    q6_claridad_pautas: str
+    q7_impacto_animo: str
+    q8_confianza_seguridad: str
+    q9_indice_recomendacion: str
+    q10_comentarios: Optional[str] = None
+    cita_id: Optional[int] = None
+
+# Cuando React pide las encuestas (con todos los datos)
+class EncuestaOut(EncuestaCreate):
+    id: int
+    fecha_generacion: datetime
+    tipo_comentario: str
+    usuario_id: int
+
+    class Config:
+        orm_mode = True
