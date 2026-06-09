@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware # <-- Asegurate de importar e
 from datetime import datetime, timedelta
 from fastapi import Query
 import google.generativeai as genai
+from pysentimiento import create_analyzer
 
 app = FastAPI()
 
@@ -34,7 +35,7 @@ app.add_middleware(
 
 
 load_dotenv() # Esto lee tu archivo .env
-
+analyzer = create_analyzer(task="sentiment", lang="es")
 api_key = os.getenv("GEMINI_API_KEY")
 
 if api_key:
@@ -717,23 +718,40 @@ def crear_encuesta_publica(
     encuesta: schemas.EncuestaCreate, 
     db: Session = Depends(get_db)
 ):
-    # Lógica para determinar el tipo de comentario
     tipo_com = "NEUTRO"
-    if encuesta.q1_satisfaccion_general >= 4:
-        tipo_com = "POSITIVO"
-    elif encuesta.q1_satisfaccion_general <= 2:
-        tipo_com = "NEGATIVO"
+    
+    # 2. Evaluamos el texto real con pysentimiento (Si el paciente escribió algo)
+    if encuesta.q10_comentarios and encuesta.q10_comentarios.strip() != "":
+        
+        # Le pasamos el texto al modelo
+        resultado = analyzer.predict(encuesta.q10_comentarios)
+        
+        # pysentimiento devuelve 'POS', 'NEG' o 'NEU'. 
+        # Lo traducimos a las palabras exactas que espera tu dashboard:
+        if resultado.output == "POS":
+            tipo_com = "POSITIVO"
+        elif resultado.output == "NEG":
+            tipo_com = "NEGATIVO"
+        else:
+            tipo_com = "NEUTRO"
+            
+    # 3. Plan de respaldo: Si dejó el cuadro de texto vacío, usamos la Q1
+    else:
+        if encuesta.q1_satisfaccion_general >= 4:
+            tipo_com = "POSITIVO"
+        elif encuesta.q1_satisfaccion_general <= 2:
+            tipo_com = "NEGATIVO"
 
-    # Guardamos la encuesta usando el ID que viene en la URL
+    # 4. Guardamos la encuesta en la BD
     nueva_encuesta = models.EncuestaExperiencia(
         **encuesta.dict(),
         tipo_comentario=tipo_com,
-        usuario_id=psicologo_id # 🌟 Aquí está la magia de la conexión anónima
+        usuario_id=psicologo_id
     )
     
     db.add(nueva_encuesta)
     db.commit()
-    return {"mensaje": "Feedback anónimo enviado con éxito"}
+    return {"mensaje": "Feedback anónimo evaluado con IA y guardado con éxito"}
 
 # 2. RUTA PARA OBTENER TODAS LAS ENCUESTAS DEL PSICÓLOGO
 @app.get("/encuestas", response_model=List[schemas.EncuestaOut])
