@@ -177,3 +177,5 @@ class EncuestaOut(EncuestaCreate):
 
     class Config:
         orm_mode = True
+class ComentarioFeedback(BaseModel):
+    texto: str

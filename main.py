@@ -35,7 +35,12 @@ app.add_middleware(
 
 
 load_dotenv() # Esto lee tu archivo .env
+print("Cargando modelo de IA para sentimientos...")
 analyzer = create_analyzer(task="sentiment", lang="es")
+print("¡Modelo cargado y listo!")
+
+
+
 api_key = os.getenv("GEMINI_API_KEY")
 
 if api_key:
@@ -721,26 +726,29 @@ def crear_encuesta_publica(
     tipo_com = "NEUTRO"
     
     # 2. Evaluamos el texto real con pysentimiento (Si el paciente escribió algo)
+    # 2. Evaluamos el texto real con pysentimiento (Si el paciente escribió algo)
     if encuesta.q10_comentarios and encuesta.q10_comentarios.strip() != "":
         
         # Le pasamos el texto al modelo
         resultado = analyzer.predict(encuesta.q10_comentarios)
         
+        # Si la IA se confunde y dice POSITIVO, pero la calificación de estrellas (Q1) fue de 3 o menos...
+        if resultado.output == "POS" and encuesta.q1_satisfaccion_general <= 3:
+            tipo_com = "NEGATIVO" # Tu lógica de ingeniero corrige a la IA
+            
         # pysentimiento devuelve 'POS', 'NEG' o 'NEU'. 
-        # Lo traducimos a las palabras exactas que espera tu dashboard:
         if resultado.output == "POS":
-            tipo_com = "POSITIVO"
+            # 🛡️ VALIDACIÓN CRUZADA: Si la IA dice POSITIVO pero la calificación fue mala/regular (3 o menos), lo forzamos a NEGATIVO o NEUTRO.
+            if encuesta.q1_satisfaccion_general <= 3:
+                tipo_com = "NEGATIVO" # O "NEUTRO", dependiendo de qué tan estricto querrás ser
+            else:
+                tipo_com = "POSITIVO"
+        
+              
         elif resultado.output == "NEG":
             tipo_com = "NEGATIVO"
         else:
             tipo_com = "NEUTRO"
-            
-    # 3. Plan de respaldo: Si dejó el cuadro de texto vacío, usamos la Q1
-    else:
-        if encuesta.q1_satisfaccion_general >= 4:
-            tipo_com = "POSITIVO"
-        elif encuesta.q1_satisfaccion_general <= 2:
-            tipo_com = "NEGATIVO"
 
     # 4. Guardamos la encuesta en la BD
     nueva_encuesta = models.EncuestaExperiencia(
@@ -888,3 +896,4 @@ def obtener_historial_sesiones(
         })
 
     return historial
+
