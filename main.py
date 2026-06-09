@@ -234,6 +234,31 @@ def actualizar_cita(cita_id: int, cita_actualizada: schemas.CitaCreate, db: Sess
     
     return cita_encontrada
 
+@app.put("/citas/{cita_id}/completar")
+def completar_cita(
+    cita_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    # 🔍 Buscamos la cita asegurando el candado de seguridad de tu clínica
+    cita = db.query(models.Cita).join(models.Paciente).filter(
+        models.Cita.id == cita_id,
+        models.Paciente.clinica_id == current_user.clinica_id
+    ).first()
+
+    if not cita:
+        raise HTTPException(status_code=404, detail="Cita no encontrada o no autorizada")
+
+    # 🔄 Hacemos el update del estado
+    cita.estado = "completada"
+    db.commit()
+    db.refresh(cita)
+
+    return {
+        "status": "success",
+        "message": "Cita marcada como completada con éxito",
+        "nuevo_estado": cita.estado
+    }
 
 # --- VENTANILLA 3: ELIMINAR UNA CITA (Para cuando le den a la X roja) ---
 @app.delete("/citas/{cita_id}")
@@ -719,3 +744,129 @@ def obtener_encuestas(
     # Solo traemos las encuestas de este psicólogo
     encuestas = db.query(models.EncuestaExperiencia).filter(models.EncuestaExperiencia.usuario_id == current_user.id).all()
     return encuestas
+
+@app.get("/dashboard/pacientes-activos")
+def obtener_pacientes_activos(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    total_pacientes = db.query(models.Paciente).filter(
+        # 🌟 EL CAMBIO MÁGICO: current_user.clinica_id
+        models.Paciente.clinica_id == current_user.clinica_id 
+    ).count()
+    
+    return {
+        "total": total_pacientes,
+        "crecimiento_mes": "+12% este mes"
+    }
+    
+
+@app.get("/dashboard/expedientes-pendientes")
+def obtener_expedientes_pendientes(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    ahora = datetime.now()
+    limite_24h = ahora - timedelta(hours=24)
+    
+    # 🔍 Traemos todas las citas que cumplen las condiciones
+    citas_vulnerables = db.query(models.Cita).join(models.Paciente).filter(
+        models.Paciente.clinica_id == current_user.clinica_id,
+        models.Cita.fecha_cita <= limite_24h,
+        models.Cita.estado == "completada" 
+    ).filter(
+        ~models.Cita.id.in_(db.query(models.Reporte.cita_id))
+    ).all() # 🌟 Usamos .all() para traer los objetos reales
+    
+    # 📝 Construimos la lista con los detalles de los pacientes
+    lista_pendientes = []
+    for cita in citas_vulnerables:
+        lista_pendientes.append({
+            "cita_id": cita.id,
+            "paciente_id": cita.paciente_id,
+            "paciente_nombre": cita.paciente.nombre if cita.paciente else "Paciente Desconocido",
+            "fecha": cita.fecha_cita.strftime("%Y-%m-%d") if cita.fecha_cita else "",
+            "motivo": cita.motivo
+        })
+    
+    # 🚀 RETORNO CRÍTICO: Asegurate de mandar AMBAS llaves
+    return {
+        "cantidad_pendientes": len(lista_pendientes), # El número para la tarjeta
+        "detalles": lista_pendientes                  # La lista para tu Modal
+    }
+    
+@app.get("/dashboard/agenda-hoy")
+def obtener_agenda_hoy(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    # 1. Sacamos las fronteras del día de hoy (desde las 00:00 hasta las 23:59)
+    hoy_inicio = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    hoy_fin = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    # 2. Buscamos las citas del usuario para hoy, ordenadas por hora
+    citas_hoy = db.query(models.Cita).join(models.Paciente).filter(
+        models.Paciente.clinica_id == current_user.clinica_id,
+        models.Cita.fecha_cita >= hoy_inicio,
+        models.Cita.fecha_cita <= hoy_fin,
+        models.Cita.estado.notin_(["Cancelada", "cancelada"]) # Ocultamos las canceladas
+    ).order_by(models.Cita.fecha_cita.asc()).all()
+
+    agenda = []
+    ahora = datetime.now()
+
+    for cita in citas_hoy:
+        estado_visual = cita.estado.lower()
+        
+        # 🌟 LÓGICA INTELIGENTE: Si la cita es para ahorita o ya pasó la hora, 
+        # y no la han marcado completada, la ponemos "en_curso"
+        if estado_visual in ["pendiente", "reservada"]:
+            if cita.fecha_cita <= ahora:
+                estado_visual = "en_curso"
+
+        agenda.append({
+            "id": cita.id,
+            "hora": cita.fecha_cita.strftime("%I:%M %p"), # Convierte a formato "08:00 AM"
+            "paciente": cita.paciente.nombre if cita.paciente else "Desconocido",
+            "tipo": cita.motivo,
+            "estado": estado_visual,
+            "duracion": "60 min" # Lo dejamos fijo por ahora, o si tenés el campo, lo cambiás
+        })
+
+    return agenda
+
+@app.get("/pacientes/{paciente_id}/historial-sesiones")
+def obtener_historial_sesiones(
+    paciente_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    # 1. Seguridad del SaaS: Validamos que el paciente pertenezca a la clínica del usuario
+    paciente = db.query(models.Paciente).filter(
+        models.Paciente.id == paciente_id,
+        models.Paciente.clinica_id == current_user.clinica_id
+    ).first()
+
+    if not paciente:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado o no autorizado")
+
+    # 2. Traemos TODAS las citas de este paciente, la más reciente primero
+    citas = db.query(models.Cita).filter(
+        models.Cita.paciente_id == paciente_id
+    ).order_by(models.Cita.fecha_cita.desc()).all()
+
+    historial = []
+    for cita in citas:
+        historial.append({
+            "cita_id": cita.id,
+            "fecha": cita.fecha_cita.strftime("%Y-%m-%d") if cita.fecha_cita else "Sin fecha",
+            "hora": cita.fecha_cita.strftime("%I:%M %p") if cita.fecha_cita else "",
+            "motivo": cita.motivo,
+            "estado": cita.estado.lower(), # Lo mandamos en minúscula para manejarlo fácil en React
+            "modalidad": cita.modalidad,
+            # 🌟 AQUÍ ESTÁ LA MAGIA: Gracias al relationship, SQLAlchemy sabe si hay reporte
+            "tiene_reporte": cita.reporte is not None,
+            "reporte_id": cita.reporte.id if cita.reporte else None
+        })
+
+    return historial
