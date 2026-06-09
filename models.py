@@ -117,7 +117,7 @@ class EncuestaExperiencia(Base):
     q8_confianza_seguridad = Column(String) # "Completamente seguro", etc.
     q9_indice_recomendacion = Column(String) # "Definitivamente", etc.
     q10_comentarios = Column(Text, nullable=True) # "Me sentí muy seguro..."
-    
+    clasificacion_ia = Column(String(20), nullable=True) # Aquí guardás "NEGATIVO", "POSITIVO" o "NEUTRO"
     # Análisis de sentimiento (Positivo, Negativo, Sugerencia)
     tipo_comentario = Column(String, default="NEUTRO") 
 
@@ -125,6 +125,3 @@ class EncuestaExperiencia(Base):
     # ¿A qué psicólogo le hicieron esta encuesta?
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
     usuario = relationship("Usuario", back_populates="encuestas")
-
-    # (Opcional) ¿De qué cita fue?
-    cita_id = Column(Integer, ForeignKey("citas.id"), nullable=True)
