@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 import models, schemas
@@ -776,16 +777,71 @@ def obtener_pacientes_activos(
     db: Session = Depends(get_db),
     current_user: models.Usuario = Depends(get_current_user)
 ):
-    total_pacientes = db.query(models.Paciente).filter(
-        # 🌟 EL CAMBIO MÁGICO: current_user.clinica_id
-        models.Paciente.clinica_id == current_user.clinica_id 
-    ).count()
-    
+    # 1. Obtenemos TODOS los pacientes de esta clínica
+    pacientes = db.query(models.Paciente).filter(
+        models.Paciente.clinica_id == current_user.clinica_id
+    ).all()
+
+    hoy = datetime.now()
+    mes_actual = hoy.month
+    anio_actual = hoy.year
+
+    if mes_actual == 1:
+        mes_pasado = 12
+        anio_pasado = anio_actual - 1
+    else:
+        mes_pasado = mes_actual - 1
+        anio_pasado = anio_actual
+
+    nuevos_este_mes = 0
+    nuevos_mes_pasado = 0
+    historial_mensual = {}
+
+    # 2. El Truco Ninja: Usar la PRIMERA cita como fecha de ingreso
+    for paciente in pacientes:
+        # Buscamos la cita más antigua de este paciente (.asc())
+        primera_cita = db.query(models.Cita).filter(
+            models.Cita.paciente_id == paciente.id,
+            models.Cita.fecha_cita != None
+        ).order_by(models.Cita.fecha_cita.asc()).first()
+
+        # Si el paciente está registrado pero no tiene citas aún, lo ignoramos para la estadística
+        if not primera_cita:
+            continue
+            
+        fecha = primera_cita.fecha_cita
+        
+        # Contabilizamos para el cálculo del porcentaje
+        if fecha.year == anio_actual and fecha.month == mes_actual:
+            nuevos_este_mes += 1
+        elif fecha.year == anio_pasado and fecha.month == mes_pasado:
+            nuevos_mes_pasado += 1
+            
+        # Guardamos en el registro histórico
+        llave_mes = fecha.strftime("%m-%Y") 
+        historial_mensual[llave_mes] = historial_mensual.get(llave_mes, 0) + 1
+
+    # 3. La fórmula matemática del Crecimiento
+    if nuevos_mes_pasado == 0:
+        if nuevos_este_mes > 0:
+            porcentaje_str = "+100%" 
+        else:
+            porcentaje_str = "0%"
+    else:
+        crecimiento = ((nuevos_este_mes - nuevos_mes_pasado) / nuevos_mes_pasado) * 100
+        
+        if crecimiento > 0:
+            porcentaje_str = f"+{round(crecimiento)}%"
+        elif crecimiento < 0:
+            porcentaje_str = f"{round(crecimiento)}%" 
+        else:
+            porcentaje_str = "0%"
+
     return {
-        "total": total_pacientes,
-        "crecimiento_mes": "+12% este mes"
+        "total": len(pacientes), # El total de pacientes registrados (tengan citas o no)
+        "crecimiento_mes": porcentaje_str,
+        "historial": historial_mensual 
     }
-    
 
 @app.get("/dashboard/expedientes-pendientes")
 def obtener_expedientes_pendientes(
@@ -897,3 +953,98 @@ def obtener_historial_sesiones(
 
     return historial
 
+@app.get("/estadisticas/motivos-distribucion")
+def obtener_distribucion_motivos(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    # 1. Contamos el TOTAL de citas de los pacientes de esta CLÍNICA
+    total_citas = db.query(models.Cita).join(
+        models.Paciente # 🔗 Conectamos Cita con Paciente
+    ).filter(
+        models.Paciente.clinica_id == current_user.clinica_id, # 🛡️ El candado de seguridad
+        models.Cita.motivo != None
+    ).count()
+
+    if total_citas == 0:
+        return [] 
+
+    # 2. Agrupamos por motivo usando el JOIN
+    resultados = db.query(
+        models.Cita.motivo,
+        func.count(models.Cita.id).label('cantidad')
+    ).join(
+        models.Paciente # 🔗 Volvemos a conectar las tablas
+    ).filter(
+        models.Paciente.clinica_id == current_user.clinica_id, # 🛡️ Mismo candado
+        models.Cita.motivo != None
+    ).group_by(
+        models.Cita.motivo
+    ).order_by(
+        func.count(models.Cita.id).desc()
+    ).limit(4).all() 
+
+    # 3. Formateamos la respuesta con los porcentajes exactos
+    distribucion = []
+    for motivo, cantidad in resultados:
+        porcentaje = round((cantidad / total_citas) * 100)
+        distribucion.append({
+            "motivo": motivo,
+            "porcentaje": porcentaje
+        })
+
+    return distribucion
+
+@app.get("/dashboard/alertas-inactividad")
+def obtener_alertas_inactividad(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    # 1. Buscamos a los pacientes de esta clínica (Multi-tenant)
+    pacientes = db.query(models.Paciente).filter(
+        models.Paciente.clinica_id == current_user.clinica_id
+    ).all()
+
+    alertas = []
+    hoy = datetime.now()
+
+    for paciente in pacientes:
+        # 2. Buscamos su última cita pasada
+        ultima_cita = db.query(models.Cita).filter(
+            models.Cita.paciente_id == paciente.id,
+            models.Cita.fecha_cita <= hoy
+        ).order_by(models.Cita.fecha_cita.desc()).first()
+
+        # 3. Verificamos que NO tenga citas en el futuro
+        cita_futura = db.query(models.Cita).filter(
+            models.Cita.paciente_id == paciente.id,
+            models.Cita.fecha_cita > hoy
+        ).first()
+
+        # 4. Si tiene una cita pasada y no tiene citas futuras, calculamos los días
+        if ultima_cita and not cita_futura:
+            dias_inactivos = (hoy - ultima_cita.fecha_cita).days
+            
+            if dias_inactivos >= 30:
+                # Le asignamos los colores dinámicos de tu diseño según la gravedad
+                if dias_inactivos >= 60:
+                    color, bg = "text-rose-600", "bg-rose-50"      # Crítico (Rojo)
+                elif dias_inactivos >= 45:
+                    color, bg = "text-amber-600", "bg-amber-50"    # Advertencia (Naranja)
+                else:
+                    color, bg = "text-slate-500", "bg-slate-100"   # Normal (Gris)
+
+                alertas.append({
+                    "id": paciente.id,
+                    # Asumiendo que tenés nombres y apellidos en tu modelo:
+                    "name": f"{paciente.nombre}", 
+                    "ultimaCita": f"Hace {dias_inactivos} días",
+                    "dias": dias_inactivos, # Lo guardamos oculto para ordenar
+                    "color": color,
+                    "bg": bg
+                })
+
+    # 5. Ordenamos para que los más críticos (más días) salgan primero
+    alertas.sort(key=lambda x: x["dias"], reverse=True)
+    
+    return alertas
