@@ -179,3 +179,10 @@ class EncuestaOut(EncuestaCreate):
         orm_mode = True
 class ComentarioFeedback(BaseModel):
     texto: str
+from pydantic import BaseModel
+from typing import Dict, Any
+
+class TusStatsDePaciente(BaseModel): # Como sea que se llame tu clase
+    total: int
+    crecimiento_mes: str
+    historial: Dict[str, int] = {} # 🌟 EL PASE VIP PARA QUE LLEGUE A REACT
