@@ -24,7 +24,8 @@ class CitaCreate(BaseModel):
     motivo: str
     fecha_cita: datetime 
     estado: str
-    modalidad: str # 🌟 ¡NUEVO CAMPO: Presencial, Virtual, A domicilio!
+    modalidad: str 
+    tarifa: float = 0.0 # 🌟 ¡NUEVO CAMPO FINANCIERO! (Default para que no explote)
 
 # Molde de SALIDA (Lo que le devolvemos a React para pintar las tarjetas)
 class CitaOut(BaseModel):
@@ -32,7 +33,8 @@ class CitaOut(BaseModel):
     motivo: str
     fecha_cita: datetime
     estado: str
-    modalidad: str # 🌟 ¡NUEVO CAMPO!
+    modalidad: str 
+    tarifa: float # 🌟 ¡Para que el dashboard pueda sumar los ingresos!
     paciente_id: int
 
     class Config:
@@ -61,6 +63,10 @@ class AnalisisIARequest(BaseModel):
     motivo_consulta: str
     notas_psicologo: str
     pruebas_aplicadas: str
+    resultados_pruebas: str  # 🌟 Asegurate de tener esto
+    # 🌟 LAS DOS LÍNEAS QUE EVITAN EL ERROR 422:
+    edad_paciente: str
+    sexo_paciente: str
 
 # --- Agregá este molde nuevo arriba en schemas.py ---
 class PacienteParaReporte(BaseModel):

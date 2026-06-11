@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean,Float
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -55,7 +55,8 @@ class Cita(Base):
     
     estado = Column(String, default="Pendiente") 
     modalidad = Column(String, default="Presencial") # 🌟 NUEVO: Virtual, Presencial, etc.
-    
+    # 🌟 NUEVO: Aquí guardamos la plata. Float nos permite decimales (ej: 35.50)
+    tarifa = Column(Float, default=0.0)
     paciente_id = Column(Integer, ForeignKey("pacientes.id"))
 
     paciente = relationship("Paciente", back_populates="citas")
