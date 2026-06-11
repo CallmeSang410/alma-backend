@@ -202,14 +202,14 @@ def crear_cita(paciente_id: int, cita: schemas.CitaCreate, db: Session = Depends
         raise HTTPException(status_code=404, detail="No puedes agendarle una cita a un paciente que no existe")
 
     # 2. Creamos la cita conectándola con el paciente
-    # 🌟 AHORA SÍ GUARDAMOS LA URGENCIA Y EL ESTADO 🌟
     nueva_cita = models.Cita(
-    motivo=cita.motivo,
-    fecha_cita=cita.fecha_cita,
-    estado=cita.estado,
-    modalidad=cita.modalidad, # 🌟 GUARDANDO EL DATO
-    paciente_id=paciente_id
-)
+        motivo=cita.motivo,
+        fecha_cita=cita.fecha_cita,
+        estado=cita.estado,
+        modalidad=cita.modalidad, 
+        tarifa=cita.tarifa, # 🌟 AQUÍ ATRAPAMOS EL BILLETE
+        paciente_id=paciente_id
+    )
     
     # 3. La guardamos en la bóveda
     db.add(nueva_cita)
@@ -229,11 +229,12 @@ def actualizar_cita(cita_id: int, cita_actualizada: schemas.CitaCreate, db: Sess
     if not cita_encontrada:
         raise HTTPException(status_code=404, detail="Cita no encontrada")
     
-    # 2. Reemplazamos todos los datos con lo que mandó React (¡Adiós urgencia, hola modalidad!)
+    # 2. Reemplazamos todos los datos con lo que mandó React
     cita_encontrada.motivo = cita_actualizada.motivo
     cita_encontrada.fecha_cita = cita_actualizada.fecha_cita
     cita_encontrada.estado = cita_actualizada.estado
-    cita_encontrada.modalidad = cita_actualizada.modalidad # 🌟 Agregamos el campo nuevo
+    cita_encontrada.modalidad = cita_actualizada.modalidad 
+    cita_encontrada.tarifa = cita_actualizada.tarifa # 🌟 ACTUALIZAMOS LA TARIFA SI HUBO CAMBIOS
     
     # 3. Guardamos los cambios
     db.commit()
@@ -362,13 +363,15 @@ def obtener_todos_los_reportes(
             "motivo_consulta": reporte.motivo_consulta,
             "notas_psicologo": reporte.notas_psicologo,
             "pruebas_aplicadas": reporte.pruebas_aplicadas,
+            # 🌟 AQUÍ ATRAPAMOS EL NUEVO CAMPO PARA EL DASHBOARD
+            "resultados_pruebas": getattr(reporte, 'resultados_pruebas', ""), 
             "analisis_ia": reporte.analisis_ia,
             "diagnostico_final": reporte.diagnostico_final,
             "recomendaciones": reporte.recomendaciones,
             "plan_accion": reporte.plan_accion,
             "fecha_generacion": reporte.fecha_generacion,
             "cita_id": reporte.cita_id,
-            "paciente_data": paciente # Tu lógica original intacta
+            "paciente_data": paciente 
         }
         respuesta.append(rep_dict)
 
@@ -383,12 +386,15 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     Actúa como un neuropsicólogo clínico senior con 20 años de experiencia. Tu tarea es analizar las notas iniciales de una sesión terapéutica y redactar un análisis técnico-profesional para ayudar al psicólogo humano a formular su diagnóstico.
 
     CONTEXTO CLÍNICO PROPORCIONADO:
+    - Edad: {datos.edad_paciente}
+    - Sexo biológico: {datos.sexo_paciente}
     - Motivo de Consulta: {datos.motivo_consulta}
     - INSTRUMENTOS Y TÉCNICAS APLICADAS: {datos.pruebas_aplicadas or 'Entrevista clínica semiestructurada'}
+    - RESULTADOS CUANTITATIVOS/PUNTAJES: {datos.resultados_pruebas or 'No se proporcionaron puntajes exactos.'}
     - NOTAS CRUDAS DE LA SESIÓN: "{datos.notas_psicologo}"
 
     REGLAS ESTRICTAS DE ANÁLISIS Y FORMATO:
-    1. INTEGRACIÓN DE INSTRUMENTOS (¡OBLIGATORIO!): Analiza críticamente cómo los síntomas se relacionan con los instrumentos aplicados.
+    1. INTEGRACIÓN DE INSTRUMENTOS (¡OBLIGATORIO!): Analiza críticamente cómo los síntomas se relacionan con los instrumentos aplicados y sus resultados cuantitativos.
     2. DEBES insertar un DOBLE SALTO DE LÍNEA después de cada título (##). NUNCA inicies el párrafo en la misma línea del título.
     3. Usa **negritas** para resaltar síntomas clave, síndromes, escalas o posibles códigos del DSM-5.
     4. Limítate estrictamente a la impresión diagnóstica. NO sugieras planes de acción, recomendaciones ni tratamientos, eso es labor exclusiva del terapeuta.
@@ -397,7 +403,7 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
 
     ## 🔍 Análisis Sintomatológico y Observaciones
     
-    (Párrafo descriptivo integrando síntomas e instrumentos).
+    (Párrafo descriptivo integrando síntomas, los instrumentos utilizados y sus puntajes).
 
     ## 🧠 Posibles Ejes Diagnósticos (Alineación DSM-5)
     
@@ -405,7 +411,7 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     """
 
     try:
-        # 1. Configuración a la vieja escuela (la que sí te funciona)
+        # 1. Configuración a la vieja escuela
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         
         # 2. Inicializamos el modelo de IA
@@ -668,19 +674,35 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
 @app.post("/soporte/chat")
 def chat_soporte_alma(request: schemas.ChatbotRequest):
     instrucciones = """
-    Eres el asistente virtual oficial de soporte técnico del sistema HorizonFlow.
-    Tu objetivo es ayudar a psicólogos y administradores clínicos a usar la plataforma.
+    Eres el Asistente Virtual de 'HorizonFlow', un sistema SaaS de gestión clínica para psicólogos y estudiantes de psicología. Tu objetivo es guiar a los profesionales sobre cómo usar la plataforma. 
+    Responde SIEMPRE de forma amable, profesional y usa párrafos cortos. 
+    No respondas preguntas médicas, tu trabajo es dar soporte técnico sobre el uso del software HorizonFlow.
 
-    Conoces las siguientes funcionalidades clave del sistema:
-    1. Directorio de Pacientes: Permite agregar pacientes, ver su expediente, editar su perfil y eliminarlos de forma segura.
-    2. Expediente Clínico: Contiene la información de contacto, la línea de tiempo gráfica (Historial Evolutivo) y el historial de reportes.
-    3. Reportes IA: El sistema permite estructurar notas clínicas usando IA para generar análisis y diagnósticos.
-    4. Ajustes: Permite cambiar entre Tema Claro/Oscuro, ajustar el tamaño de texto, establecer alertas de 24/48/72 horas y reportar bugs.
+    BASE DE CONOCIMIENTO DE HORIZONFLOW:
 
-    Reglas:
-    - Sé amable, conciso y muy profesional. Dirígete al usuario de forma respetuosa.
-    - Si preguntan sobre cómo funciona algo, explícalo en pasos cortos o viñetas.
-    - Eres soporte técnico de software: NO des consejos médicos, diagnósticos o terapia a pacientes.
+    1. GESTIÓN DE PACIENTES Y ALERTAS:
+    - Directorio y Búsqueda: Buscador Inteligente que filtra en tiempo real por nombre o teléfono.
+    - Alertas de Inactividad: El sistema detecta y notifica automáticamente en el Dashboard si un paciente tiene más de 30 días sin agendar una cita.
+
+    2. AGENDA, NOTIFICACIONES Y FINANZAS:
+    - Campana de Alertas: Arriba a la derecha hay una campana que muestra las 'Próximas Citas' con una cuenta regresiva exacta (ej. 'Faltan 23h 15m').
+    - Finanzas: Cada cita exige ingresar una tarifa ($), lo que alimenta el módulo de 'Salud del Consultorio' en el Dashboard.
+
+    3. WIZARD DE EVALUACIÓN CLÍNICA (CON IA):
+    - Es un proceso de 4 pasos. El Paso 1 vincula la cita y el motivo. El Paso 2 recopila notas e instrumentos.
+    - Memoria Inteligente (Chips): Si el psicólogo usa un instrumento o acción recurrente (ej. 'Inventario de Beck'), el sistema lo guarda como un botón de autocompletado rápido para futuras sesiones.
+    - El Paso 3 usa Inteligencia Artificial para redactar el Análisis Clínico y sugerir ejes diagnósticos (CIE-11/DSM-5).
+    - Exportar a PDF: El reporte final se puede exportar en alta calidad, con membrete oficial y espacio para firmas.
+
+    4. DASHBOARD Y SALUD DEL CONSULTORIO:
+    - Es el panel de control principal. Muestra: 'Pacientes Activos', 'Expedientes por Actualizar' y la 'Agenda del Día' (línea de tiempo).
+    - Salud del Consultorio: Mide KPIs vitales de negocio: 'Ingresos Estimados' del mes, 'Tasa de Retención' de pacientes y 'Horas Ahorradas con IA'.
+    - Distribución de Motivos: Gráficos que muestran cuáles son los diagnósticos o motivos de consulta más frecuentes en la clínica.
+
+    5. MÓDULO DE ANÁLISIS DE EXPERIENCIA (NUEVO):
+    - Permite al psicólogo medir la calidad de su servicio mediante encuestas enviadas a los pacientes (Botón 'Compartir Encuesta').
+    - Muestra KPIs como 'Satisfacción Global' (sobre 5 estrellas) y el 'Índice Promotores' (NPS).
+    - Desglosa métricas pregunta por pregunta: Cumplimiento de expectativas, empatía, instalaciones, etc.
     """
 
     try:
@@ -1048,3 +1070,71 @@ def obtener_alertas_inactividad(
     alertas.sort(key=lambda x: x["dias"], reverse=True)
     
     return alertas
+@app.get("/dashboard/metricas-negocio")
+def obtener_metricas_negocio(
+    db: Session = Depends(get_db),
+    current_user: models.Usuario = Depends(get_current_user)
+):
+    hoy = datetime.now()
+    mes_actual = hoy.month
+    anio_actual = hoy.year
+    
+    # Manejo del cambio de año para el mes pasado
+    mes_pasado = 12 if mes_actual == 1 else mes_actual - 1
+    anio_pasado = anio_actual - 1 if mes_actual == 1 else anio_actual
+
+    # Obtenemos todas las citas válidas de esta clínica
+    citas_validas = db.query(models.Cita).join(models.Paciente).filter(
+        models.Paciente.clinica_id == current_user.clinica_id,
+        models.Cita.estado != "Cancelada"
+    ).all()
+
+    ingresos_actual = 0.0
+    ingresos_pasado = 0.0
+    pacientes_con_citas = {}
+    citas_completadas = 0
+
+    for cita in citas_validas:
+        tarifa_real = cita.tarifa or 0.0
+
+        # 1. Cálculos de Ingresos
+        if cita.fecha_cita.month == mes_actual and cita.fecha_cita.year == anio_actual:
+            ingresos_actual += tarifa_real
+        elif cita.fecha_cita.month == mes_pasado and cita.fecha_cita.year == anio_pasado:
+            ingresos_pasado += tarifa_real
+
+        # 2. Conteo para Retención
+        pacientes_con_citas[cita.paciente_id] = pacientes_con_citas.get(cita.paciente_id, 0) + 1
+
+        # 3. Conteo para Horas Ahorradas (Solo citas finalizadas generan reporte)
+        if cita.estado.lower() == "completada":
+            citas_completadas += 1
+
+    # --- MATEMÁTICA FINAL ---
+    
+    # Crecimiento de Ingresos (Fórmula MoM)
+    if ingresos_pasado == 0:
+        crecimiento_ingresos = "+100%" if ingresos_actual > 0 else "0%"
+    else:
+        porcentaje = ((ingresos_actual - ingresos_pasado) / ingresos_pasado) * 100
+        crecimiento_ingresos = f"+{round(porcentaje)}%" if porcentaje >= 0 else f"{round(porcentaje)}%"
+
+    # Tasa de Retención
+    total_pacientes_vistos = len(pacientes_con_citas)
+    pacientes_recurrentes = sum(1 for cantidad in pacientes_con_citas.values() if cantidad > 1)
+    
+    tasa_retencion = 0
+    if total_pacientes_vistos > 0:
+        tasa_retencion = round((pacientes_recurrentes / total_pacientes_vistos) * 100)
+
+    minutos_ahorrados = citas_completadas * 15
+    horas_ahorradas = round(minutos_ahorrados / 60, 1) # Lo redondeamos a 1 decimal (ej: 2.5 hrs)
+
+    return {
+        "ingresos": {
+            "monto": f"${ingresos_actual:,.2f}", 
+            "crecimiento": crecimiento_ingresos
+        },
+        "retencion": f"{tasa_retencion}%",
+        "horas_ahorradas": horas_ahorradas
+    }
