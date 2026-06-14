@@ -192,3 +192,7 @@ class TusStatsDePaciente(BaseModel): # Como sea que se llame tu clase
     total: int
     crecimiento_mes: str
     historial: Dict[str, int] = {} # 🌟 EL PASE VIP PARA QUE LLEGUE A REACT
+    
+class PerfilUpdate(BaseModel):
+    nombre_clinica: str
+    password: str

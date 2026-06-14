@@ -58,9 +58,9 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 # Encendemos el motor de encriptación para las contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+def get_password_hash(password: str):
+    return pwd_context.hash(password)
 
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Creamos las tablas si no existen
 # 💥 LA BOMBA ATÓMICA: Borra todo y lo vuelve a crear con los planos nuevos
 models.Base.metadata.create_all(bind=engine)
@@ -1158,3 +1158,20 @@ def obtener_metricas_negocio(
         "retencion": f"{tasa_retencion}%",
         "horas_ahorradas": horas_ahorradas
     }
+    
+@app.put("/usuarios/actualizar")
+def actualizar_perfil(datos: PerfilUpdate, current_user = Depends(get_current_user), db: Session = Depends(get_db)):
+    usuario = db.query(Usuario).filter(Usuario.email == current_user.email).first()
+    
+    if not usuario:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    
+    # Actualiza el nombre
+    usuario.nombre_clinica = datos.nombre_clinica
+    
+    # Encripta y actualiza la nueva contraseña (usando la función de hash que ya tengan)
+    if datos.password:
+        usuario.password = get_password_hash(datos.password) 
+        
+    db.commit()
+    return {"mensaje": "Perfil actualizado con éxito"}
