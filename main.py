@@ -383,9 +383,9 @@ def obtener_todos_los_reportes(
 @app.post("/reportes/analizar")
 def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     prompt_maestro = f"""
-    Actúa como un neuropsicólogo clínico senior con 20 años de experiencia. Tu tarea es analizar las notas iniciales de una sesión terapéutica y redactar un análisis técnico-profesional para ayudar al psicólogo humano a formular su diagnóstico.
+    Actúa como un neuropsicólogo clínico senior y supervisor de casos con 20 años de experiencia. Tu tarea es analizar las notas iniciales de una sesión y redactar un análisis técnico-profesional de alto nivel para ayudar al clínico a formular su diagnóstico.
 
-    CONTEXTO CLÍNICO PROPORCIONADO:
+    CONTEXTO CLÍNICO PROPORCIONADO (NO LO REPITAS EN TU RESPUESTA):
     - Edad: {datos.edad_paciente}
     - Sexo biológico: {datos.sexo_paciente}
     - Motivo de Consulta: {datos.motivo_consulta}
@@ -393,21 +393,27 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     - RESULTADOS CUANTITATIVOS/PUNTAJES: {datos.resultados_pruebas or 'No se proporcionaron puntajes exactos.'}
     - NOTAS CRUDAS DE LA SESIÓN: "{datos.notas_psicologo}"
 
-    REGLAS ESTRICTAS DE ANÁLISIS Y FORMATO:
-    1. INTEGRACIÓN DE INSTRUMENTOS (¡OBLIGATORIO!): Analiza críticamente cómo los síntomas se relacionan con los instrumentos aplicados y sus resultados cuantitativos.
-    2. DEBES insertar un DOBLE SALTO DE LÍNEA después de cada título (##). NUNCA inicies el párrafo en la misma línea del título.
-    3. Usa **negritas** para resaltar síntomas clave, síndromes, escalas o posibles códigos del DSM-5.
-    4. Limítate estrictamente a la impresión diagnóstica. NO sugieras planes de acción, recomendaciones ni tratamientos, eso es labor exclusiva del terapeuta.
+    REGLAS ESTRICTAS DE REDACCIÓN (SI LAS ROMPES, EL REPORTE SERÁ RECHAZADO):
+    1. CERO REDUNDANCIA (PROHIBIDO EL EFECTO LORO): NO inicies diciendo la edad del paciente, ni resumas el motivo de consulta, ni repitas los puntajes numéricos de las pruebas de forma descriptiva. Asume que el terapeuta ya conoce estos datos.
+    2. DIRECTO A LA INTERPRETACIÓN: Ve directamente a la significancia clínica. ¿Qué significa la combinación de esos síntomas y resultados en el funcionamiento neurobiológico y psicológico del paciente?
+    3. DIAGNÓSTICO DIFERENCIAL OBLIGATORIO: Debes plantear qué condiciones médicas, orgánicas (endocrinas, neurológicas, deficiencias vitamínicas) o trastornos comórbidos se deben descartar antes de dar un diagnóstico definitivo.
+    4. NO SUGIERAS TRATAMIENTOS: Limítate a la impresión clínica. La intervención es tarea del usuario.
+    5. FORMATO: Usa **negritas** para resaltar síntomas clave o síndromes. DEBES insertar un DOBLE SALTO DE LÍNEA después de cada título (##).
+    6. RIGOR DIAGNÓSTICO (ESTRICTO DSM-5-TR): Utiliza la nomenclatura actualizada del DSM-5-TR, no de manuales anteriores. Si no tienes absoluta certeza del código alfanumérico exacto de un trastorno, proporciona ÚNICAMENTE el nombre clínico y omite el código. Jamás inventes códigos.
 
-    ESTRUCTURA DE SALIDA EXACTA (Solo 2 secciones):
+    ESTRUCTURA DE SALIDA EXACTA (Deben ser exactamente estas 3 secciones):
 
-    ## 🔍 Análisis Sintomatológico y Observaciones
+    ## 🔍 Interpretación Clínica y Sintomatológica
     
-    (Párrafo descriptivo integrando síntomas, los instrumentos utilizados y sus puntajes).
+    (Análisis clínico profundo y directo del estado mental y emocional, cruzando observaciones con la significancia de los instrumentos).
 
-    ## 🧠 Posibles Ejes Diagnósticos (Alineación DSM-5)
+    ## ⚖️ Diagnóstico Diferencial (Descartes necesarios)
     
-    (Sugiere posibles diagnósticos y códigos DSM-5 que el terapeuta debería considerar según las notas).
+    (Lista de condiciones médicas, orgánicas o trastornos paralelos que el terapeuta debe descartar obligatoriamente basándose en el cuadro clínico y la edad).
+
+    ## 🧠 Hipótesis Diagnósticas (DSM-5-TR)
+    
+    (Sugiere las hipótesis diagnósticas principales con su código DSM-5, justificando clínicamente por qué aplican al caso).
     """
 
     try:
@@ -674,9 +680,23 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
 @app.post("/soporte/chat")
 def chat_soporte_alma(request: schemas.ChatbotRequest):
     instrucciones = """
-    Eres el Asistente Virtual de 'HorizonFlow', un sistema SaaS de gestión clínica para psicólogos y estudiantes de psicología. Tu objetivo es guiar a los profesionales sobre cómo usar la plataforma. 
-    Responde SIEMPRE de forma amable, profesional y usa párrafos cortos. 
-    No respondas preguntas médicas, tu trabajo es dar soporte técnico sobre el uso del software HorizonFlow.
+    Eres el Asistente Virtual de 'HorizonFlow', un sistema SaaS de gestión clínica. Tu objetivo es dar soporte técnico sobre el uso del software.
+
+    REGLAS ESTRICTAS DE COMPORTAMIENTO:
+    1. Ve DIRECTO al grano. Responde ÚNICAMENTE la pregunta específica que hace el usuario.
+    2. PROHIBIDO mencionar módulos, funciones o pantallas por las que el usuario no ha preguntado explícitamente.
+    3. Usa explicaciones técnicas pero fáciles de entender. Usa listas si es necesario.
+
+    CÁLCULO DE MÉTRICAS (SALUD DEL CONSULTORIO):
+    Si el usuario pregunta cómo funcionan o cómo se calculan las métricas del negocio, explícale la lógica interna:
+    - Ingresos Estimados (Mes): Se calcula sumando automáticamente la 'Tarifa ($)' que el psicólogo ingresa al crear cada cita, filtrando solo las del mes actual.
+    - Tasa de Retención: Mide la fidelidad. Se calcula obteniendo el porcentaje de pacientes del directorio que han llegado a agendar una segunda sesión (o más) frente a los que abandonaron tras la primera.
+    - Horas Ahorradas con IA: El sistema estima que redactar un análisis clínico manual toma 15 minutos. El cálculo multiplica la cantidad de expedientes generados con Gemini por 15 minutos, y convierte ese total en horas de trabajo administrativo ahorrado.
+
+    BASE DE DATOS DE OTROS MÓDULOS (Solo úsala si te preguntan específicamente por ellos):
+    - Alertas de Inactividad: El sistema detecta y alerta si un paciente activo lleva más de 30 días sin agendar cita.
+    - Distribución de Motivos: Gráficos de barra que muestran el porcentaje de los motivos de consulta más frecuentes del mes.
+    - Análisis de Experiencia: Módulo para enviar encuestas a pacientes y medir la 'Satisfacción Global' (sobre 5 estrellas) y el 'Índice Promotores' (NPS).
 
     BASE DE CONOCIMIENTO DE HORIZONFLOW:
 
