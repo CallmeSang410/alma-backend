@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime # <-- NUEVO: Importamos el manejador de tiempo
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 # 1. El molde base con TODOS los campos
 class PacienteBase(BaseModel):
@@ -185,8 +185,8 @@ class EncuestaOut(EncuestaCreate):
         orm_mode = True
 class ComentarioFeedback(BaseModel):
     texto: str
-from pydantic import BaseModel
-from typing import Dict, Any
+
+
 
 class TusStatsDePaciente(BaseModel): # Como sea que se llame tu clase
     total: int
@@ -195,4 +195,8 @@ class TusStatsDePaciente(BaseModel): # Como sea que se llame tu clase
     
 class PerfilUpdate(BaseModel):
     nombre_clinica: str
-    password: str
+    password_actual: Optional[str] = None # 🌟 Recibimos la vieja
+    password: Optional[str] = None
+class RecuperarPassword(BaseModel):
+    email: str
+    nueva_password: str
