@@ -49,15 +49,20 @@ class PacienteOut(PacienteBase): # <-- IMPORTANTE: Ahora sí hereda de PacienteB
     class Config:
         from_attributes = True
 
-# Molde de Entrada (Lo que el frontend envía al final del Paso 4)
+# Molde de Entrada (Lo que el frontend envía para guardar el reporte)
 class ReporteCreate(BaseModel):
     motivo_consulta: str
     notas_psicologo: str
     pruebas_aplicadas: Optional[str] = None
-    analisis_ia: str # 🌟 AÑADÍ ESTO: Ahora React nos manda el análisis
-    diagnostico_final: str
-    recomendaciones: str
-    plan_accion: str
+    
+    # 🌟 AHORA TODO ESTO ES OPCIONAL (Para permitir el guardado rápido)
+    analisis_ia: Optional[str] = None 
+    diagnostico_final: Optional[str] = None
+    recomendaciones: Optional[str] = None
+    plan_accion: Optional[str] = None
+    
+    # 🌟 NUEVO: El campo espía que nos dice si hay que actualizar al paciente
+    actualizar_diagnostico_paciente: Optional[str] = None
 
 class AnalisisIARequest(BaseModel):
     motivo_consulta: str

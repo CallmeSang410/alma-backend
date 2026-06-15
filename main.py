@@ -469,18 +469,18 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     - RESULTADOS CUANTITATIVOS/PUNTAJES: {datos.resultados_pruebas or 'No se proporcionaron puntajes exactos.'}
     - NOTAS CRUDAS DE LA SESIÓN: "{datos.notas_psicologo}"
 
-    REGLAS ESTRICTAS DE REDACCIÓN:
+   REGLAS ESTRICTAS DE REDACCIÓN:
     1. CERO REDUNDANCIA (PROHIBIDO EL EFECTO LORO): NO inicies diciendo la edad del paciente.
     2. DIRECTO A LA INTERPRETACIÓN: Ve directamente a la significancia clínica. 
     3. DIAGNÓSTICO DIFERENCIAL OBLIGATORIO: Debes plantear condiciones médicas a descartar.
     4. NO SUGIERAS TRATAMIENTOS: Limítate a la impresión clínica.
     5. FORMATO: Usa **negritas** para resaltar síntomas clave. DEBES insertar un DOBLE SALTO DE LÍNEA después de cada título (##).
-    6. RIGOR DIAGNÓSTICO (DSM-5-TR).
+    6. RIGOR DIAGNÓSTICO (DSM-5-TR y CIE-10): Al plantear las hipótesis diagnósticas, DEBES incluir obligatoriamente el código de la APA (DSM) y su equivalente internacional CIE-10 entre paréntesis. Ejemplo: "Trastorno de desregulación destructiva del estado de ánimo, 296.99 (F34.8)".
 
     ESTRUCTURA DE SALIDA EXACTA (Deben ser exactamente estas 3 secciones):
     ## 🔍 Interpretación Clínica y Sintomatológica
     ## ⚖️ Diagnóstico Diferencial (Descartes necesarios)
-    ## 🧠 Hipótesis Diagnósticas (DSM-5-TR)
+    ## 🧠 Hipótesis Diagnósticas (Códigos DSM-5-TR y CIE-10)
     """
 
     try:
@@ -506,6 +506,12 @@ def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Sess
     if reporte_existente:
         raise HTTPException(status_code=400, detail="Esta cita ya tiene un reporte")
 
+    # 🌟 MODO THANOS: Si el frontend mandó la orden del switch, actualizamos el perfil del paciente
+    if reporte.actualizar_diagnostico_paciente:
+        if cita_encontrada.paciente:
+            cita_encontrada.paciente.diagnostico_principal = reporte.actualizar_diagnostico_paciente
+
+    # Armamos el nuevo reporte para guardarlo en el historial
     nuevo_reporte = models.Reporte(
         motivo_consulta=reporte.motivo_consulta,
         notas_psicologo=reporte.notas_psicologo,
@@ -518,6 +524,7 @@ def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Sess
     )
 
     db.add(nuevo_reporte)
+    # Al hacer commit, SQLAlchemy guarda el reporte Y actualiza al paciente al mismo tiempo 😎
     db.commit()
     db.refresh(nuevo_reporte)
     
@@ -836,8 +843,47 @@ def obtener_metricas_negocio(db: Session = Depends(get_db), current_user: models
 @app.post("/soporte/chat")
 def chat_soporte_alma(request: schemas.ChatbotRequest):
     instrucciones = """
-    Eres el Asistente Virtual de 'HorizonFlow', un sistema SaaS de gestión clínica. Tu objetivo es dar soporte técnico sobre el uso del software.
-    ... (Mismas instrucciones que ya tenías)
+    Eres ALMA, el Asistente Virtual Inteligente de Soporte Técnico de 'HorizonFlow'. 
+    HorizonFlow es un avanzado software SaaS de gestión clínica, diseñado estratégicamente para psicólogos profesionales y estudiantes de psicología en prácticas.
+
+    TU OBJETIVO: 
+    Ayudar a los usuarios a navegar por la plataforma, resolver sus dudas sobre la interfaz y explicarles a detalle cómo funciona cada herramienta del sistema.
+
+    FUNCIONES Y MÓDULOS DEL SISTEMA QUE DEBES DOMINAR:
+
+    1. GESTIÓN DE PACIENTES Y CALENDARIO:
+    - Crear Pacientes: Los usuarios pueden registrar nuevos pacientes llenando su perfil básico (nombre, contacto, edad, sexo).
+    - Agendar Citas: Se realiza desde el calendario seleccionando paciente, fecha, hora y motivo.
+    - Calendario: Permite agendar, visualizar y gestionar todas las citas clínicas de manera organizada.
+
+    2. DASHBOARD Y ALERTAS:
+    - Agenda del Día: El dashboard principal muestra un resumen rápido de las citas programadas para el día actual.
+    - Alertas: El sistema notifica sobre citas próximas, pacientes inactivos o tareas pendientes para mantener al profesional organizado.
+    - Campana: Es el centro de control de eventos. Notifica en tiempo real sobre citas próximas, recordatorios de tareas, alertas de pacientes con riesgo de abandono (inactividad) y mensajes del sistema.
+
+    3. MÉTRICAS DE SALUD DEL NEGOCIO Y ESTADÍSTICAS:
+    - Distribución de Motivos: Un gráfico que muestra cuáles son los problemas más frecuentes por los que asisten los pacientes (ej. Ansiedad, Depresión), ayudando al psicólogo a entender su nicho de mercado.
+    - Días de Inactividad: Calcula cuántos días han pasado desde la última sesión de un paciente. Sirve para alertar sobre posible abandono del tratamiento y fomentar la retención.
+    - Salud del Negocio: Índice ponderado que se calcula como: (Pacientes Activos / Total de Pacientes) * 100, ajustado por la frecuencia de retención de sesiones. Un porcentaje alto indica una clínica con flujo saludable y pacientes constantes.
+
+    4. REPORTES CLÍNICOS E INTELIGENCIA ARTIFICIAL:
+    - Reportes con IA: La plataforma cruza las notas de entrevista y pruebas (BDI-II, GAD-7, etc.) para generar un borrador de análisis clínico fundamentado en el DSM-5.
+    - Modo Manual: El usuario puede saltarse la IA ("Guardar Solo Notas") para redactar su propio análisis clínico.
+    - Seguimientos y Revaluación: Para pacientes recurrentes, el sistema oculta el diagnóstico final. Si el psicólogo necesita corregir un diagnóstico pasado, usa el "Switch de Ajuste/Revaluación" para actualizar el perfil del paciente sin dañar el historial.
+    - Exportación: Se generan reportes en PDF y Word, etiquetados con un Folio único por paciente (Ej. CD-0001).
+
+    5. EXPERIENCIA Y GAMIFICACIÓN:
+    - Sistema de Experiencia (XP): Diseñado especialmente para estudiantes y nuevos profesionales. Los usuarios ganan puntos de experiencia al completar reportes, agendar citas y mantener la clínica activa. Sirve para incentivar la constancia y las buenas prácticas de documentación clínica.
+
+    6. CONFIGURACIÓN Y SEGURIDAD:
+    - Ajustes: Área para personalizar el perfil del profesional y preferencias del sistema.
+    - Cambio de Contraseña: Se realiza desde los ajustes de seguridad, solicitando la contraseña actual y la nueva para proteger la confidencialidad de los datos médicos.
+
+    REGLAS DE TU COMPORTAMIENTO:
+    - ERES SOPORTE TÉCNICO DE SOFTWARE, NO PSICÓLOGO. NUNCA des consejos médicos, diagnósticos, ni opiniones sobre pacientes.
+    - Si un usuario pregunta cómo tratar un caso, recuérdale que tu función es enseñarle a usar las herramientas de HorizonFlow para documentarlo.
+    - Responde de forma profesional, clara, empática y MUY concisa.
+    - Usa listas numeradas (1, 2, 3) o viñetas para explicar pasos.
     """
 
     try:
