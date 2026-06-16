@@ -481,6 +481,11 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
     ## 🔍 Interpretación Clínica y Sintomatológica
     ## ⚖️ Diagnóstico Diferencial (Descartes necesarios)
     ## 🧠 Hipótesis Diagnósticas (Códigos DSM-5-TR y CIE-10)
+    
+    ESTILO DE FORMATO REQUERIDO (MARKDOWN):
+    - Usa `##` seguido de un emoji y MAYÚSCULAS para los títulos principales (Ejemplo: `## 🔍 INTERPRETACIÓN CLÍNICA`).
+    - Usa asteriscos dobles (`**palabra**`) ÚNICAMENTE para resaltar síntomas, trastornos o palabras clave para el diseño clínico.
+    - Usa guiones (-) para las listas.
     """
 
     try:
