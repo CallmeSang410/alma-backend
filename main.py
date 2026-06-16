@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 from dotenv import load_dotenv
 
 import google.generativeai as genai
-from pysentimiento import create_analyzer
+
 
 import models, schemas
 from database import engine, get_db
@@ -38,10 +38,6 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# 3. CARGA DE MODELOS DE IA
-print("Cargando modelo de IA para sentimientos...")
-analyzer = create_analyzer(task="sentiment", lang="es")
-print("¡Modelo cargado y listo!")
 
 api_key = os.getenv("GEMINI_API_KEY")
 if api_key:
@@ -917,28 +913,70 @@ def chat_soporte_alma(request: schemas.ChatbotRequest):
         print(f"❌ Error en Chatbot: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def clasificar_comentario(texto_paciente: str) -> str:
+    """
+    Toma el comentario del paciente y usa Gemini 1.5 Flash para clasificarlo
+    sin restarle los tokens comerciales al psicólogo.
+    """
+    # Si el paciente no escribió nada o puso solo un "ok", va directo a NEUTRO para no hacer peticiones de balde
+    if not texto_paciente or len(texto_paciente.strip()) < 3:
+        return "NEUTRO"
+        
+    try:
+        # Usamos el modelo peso pluma y ultrarrápido
+        model = genai.GenerativeModel('gemini-flash-latest')
+        
+        # Le damos una orden militar a la IA para que no gaste tokens hablando de más
+        prompt = f"""
+        Actúa como un analizador de sentimientos clínicos. 
+        Analiza este comentario de un paciente sobre su sesión psicológica y responde ÚNICAMENTE con una de estas tres palabras: POSITIVO, NEUTRO, o NEGATIVO. 
+        No agregues puntos, ni comillas, ni explicaciones.
+        Comentario: "{texto_paciente}"
+        """
+        
+        # Hacemos la llamada
+        response = model.generate_content(prompt)
+        resultado = response.text.strip().upper()
+        
+        # Limpieza por si la IA es necia y le pone un punto o comillas al final ("POSITIVO.")
+        resultado = resultado.replace(".", "").replace('"', '').replace("'", "")
+        
+        # Verificamos que sea exactamente la palabra que espera tu base de datos
+        if resultado in ["POSITIVO", "NEUTRO", "NEGATIVO"]:
+            return resultado
+            
+        return "NEUTRO"
+        
+    except Exception as e:
+        print(f"Error clasificando con IA (posible caída de red): {e}")
+        # 🌟 EL HACK DE SEGURIDAD: Si no hay internet o Google falla, devolvemos Neutro para que la encuesta SIEMPRE se guarde y no crashee
+        return "NEUTRO"
+
 @app.post("/encuestas/publica/{psicologo_id}")
 def crear_encuesta_publica(psicologo_id: int, encuesta: schemas.EncuestaCreate, db: Session = Depends(get_db)):
     tipo_com = "NEUTRO"
     
     if encuesta.q10_comentarios and encuesta.q10_comentarios.strip() != "":
-        resultado = analyzer.predict(encuesta.q10_comentarios)
+        # 🌟 1. Llamamos a nuestra función ligera de Gemini
+        resultado_ia = clasificar_comentario(encuesta.q10_comentarios)
         
-        if resultado.output == "POS":
+        # 🌟 2. Mantenemos tu excelente lógica anti-sarcasmo con las estrellas
+        if resultado_ia == "POSITIVO":
             if encuesta.q1_satisfaccion_general <= 3:
                 tipo_com = "NEGATIVO" 
             else:
                 tipo_com = "POSITIVO"
-        elif resultado.output == "NEG":
+        elif resultado_ia == "NEGATIVO":
             tipo_com = "NEGATIVO"
         else:
             tipo_com = "NEUTRO"
 
+    # 🌟 3. Guardamos en la base de datos sin gastar un solo mega de RAM
     nueva_encuesta = models.EncuestaExperiencia(
-        **encuesta.dict(),
-        tipo_comentario=tipo_com,
-        usuario_id=psicologo_id
-    )
+    **encuesta.model_dump(),
+    tipo_comentario=tipo_com,
+    usuario_id=psicologo_id
+)
     
     db.add(nueva_encuesta)
     db.commit()
