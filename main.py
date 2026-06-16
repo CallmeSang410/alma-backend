@@ -29,13 +29,19 @@ origenes_permitidos = [
     "http://localhost:5173", # La dirección de tu React
 ]
 
+origins = [
+    "https://alma-front-6j9ue2p7e-callmesang410s-projects.vercel.app",  # Tu URL de Vercel actual
+    "https://alma-front-end-mu.vercel.app",                           # Tu URL principal de Vercel
+    "http://localhost:5173",                                          # Por si corres el frontend local
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origenes_permitidos, 
+    allow_origins=["*"],  # 👈 Nota: Usar ["*"] permite CUALQUIER origen. Es ideal para pruebas rápidas y quitar el error de inmediato.
     allow_credentials=True,
-    allow_methods=["*"], 
-    allow_headers=["*"], 
-    expose_headers=["*"]
+    allow_methods=["*"],  # Permite GET, POST, PUT, DELETE, etc.
+    allow_headers=["*"],  # Permite cabeceras como Authorization, Content-Type, etc.
 )
 
 
