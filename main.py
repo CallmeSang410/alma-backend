@@ -555,7 +555,8 @@ def obtener_alertas_activas(
         models.Paciente.clinica_id == current_user.clinica_id, 
         models.Cita.fecha_cita >= ahora,
         models.Cita.fecha_cita <= limite_alerta,
-        models.Cita.estado == "Pendiente"
+        # 🌟 EL CAMBIO MAGICO: Ahora busca ambas
+        models.Cita.estado.in_(["Pendiente", "Reservada"])
     ).all()
     
     respuesta = []
