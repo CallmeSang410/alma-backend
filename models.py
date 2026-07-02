@@ -29,21 +29,20 @@ class Paciente(Base):
     __tablename__ = "pacientes"
 
     id = Column(Integer, primary_key=True, index=True)
+    folio_visual = Column(Integer, nullable=True) # 🌟 NUEVO: El folio independiente por clínica
     nombre = Column(String, index=True)
     telefono = Column(String, nullable=True)
     email = Column(String, index=True, nullable=True)
     edad = Column(Integer, nullable=True)
-    sexo = Column(String, nullable=True) # 🌟 NUEVO: Para guardar el dato del frontend
+    sexo = Column(String, nullable=True) 
     estado = Column(String, nullable=True)
     diagnostico_principal = Column(String, nullable=True)
     clinica_id = Column(Integer, ForeignKey("clinicas.id"))
     
     clinica = relationship("Clinica", back_populates="pacientes")
     
-    # 🌟 MODO THANOS: cascade="all, delete-orphan" elimina todas las citas al borrar al paciente
+    # MODO THANOS
     citas = relationship("Cita", back_populates="paciente", cascade="all, delete-orphan")
-    
-    # 🌟 MODO THANOS: También elimina sus eventos de la línea de tiempo
     eventos = relationship("EventoVida", back_populates="paciente", cascade="all, delete-orphan")
 
 class Cita(Base):

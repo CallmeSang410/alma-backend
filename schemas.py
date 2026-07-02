@@ -41,14 +41,25 @@ class CitaOut(BaseModel):
         from_attributes = True
         
 # 🌟 EL MOLDE DE SALIDA DEFINITIVO Y CORRECTO:
-class PacienteOut(PacienteBase): # <-- IMPORTANTE: Ahora sí hereda de PacienteBase
+class PacienteOut(PacienteBase):
     id: int
-    clinica_id: int              # <-- Conservamos el ID de la clínica para el SaaS
-    citas: List[CitaOut] = []    # <-- Conservamos el historial de citas jalado de la BD
+    folio_visual: Optional[int] = None  # 🌟 ¡NUEVO! El pase VIP para que React lo vea
+    clinica_id: int              
+    citas: List[CitaOut] = []    
 
     class Config:
         from_attributes = True
 
+# --- Agregá este molde nuevo arriba en schemas.py ---
+class PacienteParaReporte(BaseModel):
+    nombre: str
+    edad: Optional[int] = None
+    telefono: Optional[str] = None
+    email: Optional[str] = None
+    folio_visual: Optional[int] = None  # 🌟 ¡NUEVO! Para que el PDF de Word también tenga el folio correcto
+
+    class Config:
+        from_attributes = True
 # Molde de Entrada (Lo que el frontend envía para guardar el reporte)
 class ReporteCreate(BaseModel):
     motivo_consulta: str
@@ -73,15 +84,6 @@ class AnalisisIARequest(BaseModel):
     edad_paciente: str
     sexo_paciente: str
 
-# --- Agregá este molde nuevo arriba en schemas.py ---
-class PacienteParaReporte(BaseModel):
-    nombre: str
-    edad: Optional[int] = None
-    telefono: Optional[str] = None
-    email: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 # Molde de Salida (Lo que devolvemos)
 class ReporteOut(BaseModel):

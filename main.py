@@ -201,14 +201,24 @@ def crear_paciente(
     db: Session = Depends(get_db),
     current_user: models.Usuario = Depends(get_current_user) 
 ):
+    # 🌟 Buscamos el folio visual más alto de la clínica del psicólogo actual
+    max_folio = db.query(func.max(models.Paciente.folio_visual)).filter(
+        models.Paciente.clinica_id == current_user.clinica_id
+    ).scalar()
+
+    # Si es el primer paciente de esa clínica (max_folio es None), será 1. Si no, le suma 1.
+    siguiente_folio = (max_folio or 0) + 1
+
     nuevo_paciente = models.Paciente(
         nombre=paciente.nombre,
         telefono=paciente.telefono,
         email=paciente.email,
         edad=paciente.edad,
+        sexo=paciente.sexo, # Agregado porque lo tenías en el PUT pero faltaba en el POST
         estado=paciente.estado,
         diagnostico_principal=paciente.diagnostico_principal,
-        clinica_id=current_user.clinica_id 
+        clinica_id=current_user.clinica_id,
+        folio_visual=siguiente_folio # 🌟 Se asigna el folio secuencial perfecto
     )
     
     db.add(nuevo_paciente)
@@ -231,7 +241,7 @@ def buscar_paciente(paciente_id: int, db: Session = Depends(get_db)):
     paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
     
     if paciente_encontrado is None:
-        raise HTTPException(status_code=404, detail="El paciente no existe en la clínica ALMA")
+        raise HTTPException(status_code=404, detail="El paciente no existe en HorizonFlow")
     return paciente_encontrado
 
 @app.put("/pacientes/{paciente_id}", response_model=schemas.PacienteOut)
@@ -716,29 +726,40 @@ def obtener_historial_sesiones(paciente_id: int, db: Session = Depends(get_db), 
 
     return historial
 
+from sqlalchemy import func
+
 @app.get("/estadisticas/motivos-distribucion")
 def obtener_distribucion_motivos(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
-    total_citas = db.query(models.Cita).join(models.Paciente).filter(
+    # 1. Filtramos nulls y también cadenas vacías o puros espacios
+    filtros_base = [
         models.Paciente.clinica_id == current_user.clinica_id, 
-        models.Cita.motivo != None
-    ).count()
+        models.Cita.motivo != None,
+        func.trim(models.Cita.motivo) != ""
+    ]
+
+    total_citas = db.query(models.Cita).join(models.Paciente).filter(*filtros_base).count()
 
     if total_citas == 0:
         return [] 
 
+    # 2. Creamos el normalizador: quita espacios a los lados y convierte todo a minúsculas
+    motivo_normalizado = func.trim(func.lower(models.Cita.motivo))
+
+    # 3. Agrupamos usando la versión normalizada en lugar de la columna cruda
     resultados = db.query(
-        models.Cita.motivo,
+        motivo_normalizado.label('motivo_limpio'),
         func.count(models.Cita.id).label('cantidad')
-    ).join(models.Paciente).filter(
-        models.Paciente.clinica_id == current_user.clinica_id, 
-        models.Cita.motivo != None
-    ).group_by(models.Cita.motivo).order_by(func.count(models.Cita.id).desc()).limit(4).all() 
+    ).join(models.Paciente).filter(*filtros_base)\
+     .group_by(motivo_normalizado)\
+     .order_by(func.count(models.Cita.id).desc())\
+     .limit(4).all() 
 
     distribucion = []
-    for motivo, cantidad in resultados:
+    for motivo_limpio, cantidad in resultados:
         porcentaje = round((cantidad / total_citas) * 100)
         distribucion.append({
-            "motivo": motivo,
+            # 4. .capitalize() asegura que la primera letra sea mayúscula para el frontend (ej: "Ansiedad")
+            "motivo": motivo_limpio.capitalize() if motivo_limpio else "Desconocido",
             "porcentaje": porcentaje
         })
 
