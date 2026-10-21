@@ -1,13 +1,16 @@
 import os
+import secrets
 from datetime import datetime, timedelta
 from typing import List
 
 from fastapi import FastAPI, Depends, HTTPException, Body, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session, joinedload
 from dotenv import load_dotenv
 
@@ -15,8 +18,8 @@ import google.generativeai as genai
 
 
 import models, schemas
-from database import engine, get_db
-from schemas import PerfilUpdate, RecuperarPassword
+from database import engine, SessionLocal, get_db
+from schemas import PerfilUpdate, RecuperarPassword, GoogleAuthRequest, GoogleLinkRequest
 from models import Paciente, Cita, EncuestaExperiencia, Usuario
 
 # 1. INICIALIZACIÓN GENERAL
@@ -54,15 +57,122 @@ else:
 # 4. SEGURIDAD Y TOKENS
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_OAUTH_PREFIX = "!GOOGLE_OAUTH!"
+ALFABETO_CODIGO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def get_password_hash(password: str):
-    return pwd_context.hash(password)
+def get_password_hash(password: str) -> str:
+    # Bcrypt soporta hasta 72 bytes; truncamos preventivamente para evitar ValueError
+    password_segura = (password or "")[:72]
+    return pwd_context.hash(password_segura)
 
-# 5. CREACIÓN DE TABLAS
+def es_cuenta_solo_google(hashed_password: str) -> bool:
+    return not hashed_password or hashed_password.startswith(GOOGLE_OAUTH_PREFIX)
+
+def verificar_password_seguro(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verifica contraseñas con bcrypt protegiendo contra hashes de cuentas exclusivas de Google,
+    valores nulos o contraseñas mayores a 72 bytes sin disparar errores 500 de passlib/bcrypt.
+    """
+    if not plain_password or es_cuenta_solo_google(hashed_password):
+        return False
+    try:
+        return pwd_context.verify(plain_password[:72], hashed_password)
+    except Exception as err:
+        print(f"⚠️ Error controlado verificando hash de contraseña: {err}")
+        return False
+
+def generar_codigo_invitacion_unico(db: Session) -> str:
+    """Genera un código único de invitación de clínica con formato ALMA-XXXXXX."""
+    for _ in range(50):
+        sufijo = "".join(secrets.choice(ALFABETO_CODIGO) for _ in range(6))
+        codigo = f"ALMA-{sufijo}"
+        existe = db.query(models.Clinica).filter(models.Clinica.codigo_invitacion == codigo).first()
+        if not existe:
+            return codigo
+    return f"ALMA-{secrets.token_hex(4).upper()}"
+
+# 5. CREACIÓN DE TABLAS Y MIGRACIÓN AUTOMÁTICA SEGURA (SUPABASE / POSTGRESQL)
 models.Base.metadata.create_all(bind=engine)
+
+def asegurar_migracion_bd():
+    """
+    Asegura que la columna codigo_invitacion exista en la tabla clinicas en producción
+    (Supabase/PostgreSQL) y rellena códigos únicos para las clínicas existentes con NULL.
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE clinicas ADD COLUMN IF NOT EXISTS codigo_invitacion VARCHAR UNIQUE;")
+            )
+        db = SessionLocal()
+        try:
+            clinicas_sin_codigo = db.query(models.Clinica).filter(
+                (models.Clinica.codigo_invitacion == None) | (models.Clinica.codigo_invitacion == "")
+            ).all()
+            if clinicas_sin_codigo:
+                for clinica in clinicas_sin_codigo:
+                    clinica.codigo_invitacion = generar_codigo_invitacion_unico(db)
+                db.commit()
+                print(f"✅ Migración completada: {len(clinicas_sin_codigo)} clínica(s) actualizada(s) con código de invitación.")
+        finally:
+            db.close()
+    except Exception as err:
+        print(f"⚠️ Aviso durante la verificación de migración automática: {err}")
+
+asegurar_migracion_bd()
+
+
+def validar_token_google(credential: str) -> dict:
+    """Valida criptográficamente el ID Token de Google y devuelve su payload verificado."""
+    client_id = os.getenv("GOOGLE_CLIENT_ID") or GOOGLE_CLIENT_ID
+    if not client_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="GOOGLE_CLIENT_ID no está configurado en las variables de entorno del servidor."
+        )
+
+    try:
+        idinfo = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            client_id,
+            clock_skew_in_seconds=10
+        )
+
+        if idinfo.get("iss") not in ["accounts.google.com", "https://accounts.google.com"]:
+            raise ValueError("Emisor del token inválido.")
+
+        if not idinfo.get("email_verified", False):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="La cuenta de Google no tiene el correo electrónico verificado."
+            )
+
+        email = idinfo.get("email", "").strip().lower()
+        if not email:
+            raise ValueError("El token de Google no contiene un correo electrónico válido.")
+
+        return idinfo
+
+    except HTTPException:
+        raise
+    except ValueError as err:
+        print(f"❌ Error validando token de Google: {err}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token de Google inválido o expirado."
+        )
+    except Exception as err:
+        print(f"❌ Error inesperado en verificación de Google OAuth: {err}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al verificar las credenciales con Google."
+        )
+
 
 # ==========================================
 # 🛡️ EL GUARDIA DE SEGURIDAD ÚNICO (CADENERO)
@@ -97,9 +207,21 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 # ==========================================
 @app.post("/login")
 def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get_db)):
-    usuario_db = db.query(models.Usuario).filter(models.Usuario.username == credenciales.email).first()
+    email_limpio = credenciales.email.strip()
+    usuario_db = db.query(models.Usuario).filter(
+        func.lower(models.Usuario.username) == email_limpio.lower()
+    ).first()
     
-    if not usuario_db or not pwd_context.verify(credenciales.password, usuario_db.hashed_password):
+    if not usuario_db:
+        raise HTTPException(status_code=401, detail="El correo o la contraseña son incorrectos")
+
+    if es_cuenta_solo_google(usuario_db.hashed_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Esta cuenta fue creada con Google. Ingresa con el botón 'Continuar con Google' o configura una contraseña en Ajustes."
+        )
+
+    if not verificar_password_seguro(credenciales.password, usuario_db.hashed_password):
         raise HTTPException(status_code=401, detail="El correo o la contraseña son incorrectos")
         
     datos_gafete = {
@@ -109,11 +231,265 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
     }
     
     token_vip = jwt.encode(datos_gafete, SECRET_KEY, algorithm=ALGORITHM)
+    nombre_clinica = usuario_db.clinica.nombre if usuario_db.clinica else None
+    codigo_invitacion = usuario_db.clinica.codigo_invitacion if usuario_db.clinica else None
 
     return {
         "mensaje": "¡Bienvenido a HorizonFlow!", 
-        "tu_gafete_digital": token_vip
+        "tu_gafete_digital": token_vip,
+        "email": usuario_db.username,
+        "nombre_clinica": nombre_clinica,
+        "codigo_invitacion": codigo_invitacion,
+        "rol": usuario_db.rol
     }
+
+
+@app.post("/auth/google")
+def iniciar_sesion_google(datos: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """
+    Autentica o registra usuarios mediante Google OAuth 2.0:
+    - En modo 'login': Permite el acceso a usuarios cuyo Gmail ya está registrado o vinculado.
+    - En modo 'signup': Crea una nueva clínica (con codigo_invitacion) o une al profesional
+      a una clínica existente mediante su codigo_invitacion validado.
+    """
+    idinfo = validar_token_google(datos.credential)
+    email = idinfo.get("email", "").strip().lower()
+    nombre_google = idinfo.get("name") or email.split("@")[0]
+
+    # Buscar si el usuario ya existe en la base de datos
+    usuario_db = db.query(models.Usuario).filter(
+        func.lower(models.Usuario.username) == email
+    ).first()
+    es_nuevo_usuario = False
+
+    if not usuario_db:
+        modo = (datos.modo or "login").strip().lower()
+        if modo != "signup":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Este correo de Google aún no está registrado. Si ya tienes cuenta en HorizonFlow con otro correo, inicia sesión con tu contraseña y vincúlala en Ajustes; si eres nuevo, usa la pestaña 'Sign up'."
+            )
+
+        es_nuevo_usuario = True
+        tipo_clinica = (datos.tipo_clinica or "nueva").strip().lower()
+        roles_permitidos = {"psicologo", "estudiante", "recepcionista", "admin"}
+        rol_asignado = datos.rol if datos.rol in roles_permitidos else "psicologo"
+
+        try:
+            if tipo_clinica == "existente":
+                codigo_limpio = (datos.codigo_invitacion or "").strip().upper()
+                if not codigo_limpio:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Debes ingresar el código de invitación para unirte a una clínica existente."
+                    )
+
+                clinica_destino = db.query(models.Clinica).filter(
+                    func.upper(models.Clinica.codigo_invitacion) == codigo_limpio
+                ).first()
+
+                if not clinica_destino:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="El código de invitación no es válido. Verifícalo con el administrador de tu clínica."
+                    )
+            else:
+                nombre_clinica_limpio = (datos.nombre_clinica or "").strip()
+                if not nombre_clinica_limpio:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="El nombre del consultorio o clínica es obligatorio para crear una cuenta nueva."
+                    )
+
+                clinica_existente = db.query(models.Clinica).filter(
+                    func.lower(models.Clinica.nombre) == nombre_clinica_limpio.lower()
+                ).first()
+
+                if clinica_existente:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Ya existe una clínica con ese nombre. Si perteneces a ese equipo, elige 'Unirme con código' e ingresa su código de invitación."
+                    )
+
+                clinica_destino = models.Clinica(
+                    nombre=nombre_clinica_limpio,
+                    codigo_invitacion=generar_codigo_invitacion_unico(db)
+                )
+                db.add(clinica_destino)
+                db.flush()
+
+            # Hash prefijado con !GOOGLE_OAUTH! para impedir login por texto plano y errores de passlib
+            password_protegida = f"{GOOGLE_OAUTH_PREFIX}{get_password_hash(secrets.token_urlsafe(24))}"
+
+            usuario_db = models.Usuario(
+                username=email,
+                hashed_password=password_protegida,
+                rol=rol_asignado,
+                clinica_id=clinica_destino.id,
+                anticipacion_alerta=24
+            )
+            db.add(usuario_db)
+            db.commit()
+            db.refresh(usuario_db)
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as err:
+            db.rollback()
+            print(f"❌ Error aprovisionando usuario de Google: {err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No se pudo crear la cuenta vinculada a Google."
+            )
+
+    # Asegurar que la clínica tenga su código de invitación generado
+    if usuario_db.clinica and not usuario_db.clinica.codigo_invitacion:
+        usuario_db.clinica.codigo_invitacion = generar_codigo_invitacion_unico(db)
+        db.commit()
+        db.refresh(usuario_db)
+
+    datos_gafete = {
+        "usuario_id": usuario_db.id,
+        "clinica_id": usuario_db.clinica_id,
+        "rol": usuario_db.rol
+    }
+
+    token_vip = jwt.encode(datos_gafete, SECRET_KEY, algorithm=ALGORITHM)
+    nombre_clinica_actual = usuario_db.clinica.nombre if usuario_db.clinica else nombre_google
+    codigo_invitacion_actual = usuario_db.clinica.codigo_invitacion if usuario_db.clinica else None
+
+    return {
+        "mensaje": "¡Bienvenido a HorizonFlow!",
+        "tu_gafete_digital": token_vip,
+        "email": usuario_db.username,
+        "nombre_clinica": nombre_clinica_actual,
+        "codigo_invitacion": codigo_invitacion_actual,
+        "rol": usuario_db.rol,
+        "picture": idinfo.get("picture"),
+        "es_nuevo_usuario": es_nuevo_usuario
+    }
+
+
+@app.get("/usuarios/me")
+def obtener_perfil_actual(
+    current_user: models.Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Devuelve los datos actualizados del usuario autenticado y el código de invitación de su clínica."""
+    if current_user.clinica and not current_user.clinica.codigo_invitacion:
+        current_user.clinica.codigo_invitacion = generar_codigo_invitacion_unico(db)
+        db.commit()
+        db.refresh(current_user)
+
+    return {
+        "id": current_user.id,
+        "email": current_user.username,
+        "rol": current_user.rol,
+        "clinica_id": current_user.clinica_id,
+        "nombre_clinica": current_user.clinica.nombre if current_user.clinica else "",
+        "codigo_invitacion": current_user.clinica.codigo_invitacion if current_user.clinica else "",
+        "tiene_password_manual": not es_cuenta_solo_google(current_user.hashed_password)
+    }
+
+
+@app.put("/usuarios/vincular-google")
+def vincular_cuenta_google(
+    datos: GoogleLinkRequest,
+    current_user: models.Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fase 1 (Esquema Híbrido Autolimpiante):
+    Permite a un usuario existente (con correo ficticio en Supabase) vincular su cuenta
+    actual con su correo real de Gmail verificado por Google OAuth sin perder pacientes,
+    citas, reportes ni su clinica_id. Si existía una cuenta huérfana vacía con ese Gmail,
+    la limpia automáticamente antes de asignar el correo.
+    """
+    idinfo = validar_token_google(datos.credential)
+    email_google = idinfo.get("email", "").strip().lower()
+
+    usuario_actual = db.query(models.Usuario).filter(models.Usuario.id == current_user.id).first()
+    if not usuario_actual:
+        raise HTTPException(status_code=404, detail="Usuario activo no encontrado.")
+
+    if usuario_actual.username.strip().lower() == email_google:
+        return {
+            "mensaje": "Tu cuenta ya está vinculada a este correo de Google.",
+            "email": usuario_actual.username,
+            "nombre_clinica": usuario_actual.clinica.nombre if usuario_actual.clinica else "",
+            "codigo_invitacion": usuario_actual.clinica.codigo_invitacion if usuario_actual.clinica else "",
+            "cuenta_huerfana_limpiada": False
+        }
+
+    # Verificar si existe otra cuenta con ese correo de Gmail
+    usuario_conflicto = db.query(models.Usuario).filter(
+        func.lower(models.Usuario.username) == email_google,
+        models.Usuario.id != usuario_actual.id
+    ).first()
+
+    huerfana_limpiada = False
+
+    try:
+        if usuario_conflicto:
+            pacientes_conflicto = db.query(models.Paciente).filter(
+                models.Paciente.clinica_id == usuario_conflicto.clinica_id
+            ).count()
+            encuestas_conflicto = db.query(models.EncuestaExperiencia).filter(
+                models.EncuestaExperiencia.usuario_id == usuario_conflicto.id
+            ).count()
+            otros_usuarios_clinica = db.query(models.Usuario).filter(
+                models.Usuario.clinica_id == usuario_conflicto.clinica_id,
+                models.Usuario.id != usuario_conflicto.id
+            ).count()
+
+            # Si la cuenta en conflicto tiene pacientes reales o encuestas, bloqueamos por seguridad
+            if pacientes_conflicto > 0 or encuestas_conflicto > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Este correo de Google ya pertenece a otro consultorio con pacientes o registros activos."
+                )
+
+            # Cuenta huérfana vacía detectada: limpiamos el usuario y su clínica vacía si no tiene más miembros
+            clinica_huerfana_id = usuario_conflicto.clinica_id
+            db.delete(usuario_conflicto)
+            db.flush()
+
+            if otros_usuarios_clinica == 0 and clinica_huerfana_id != usuario_actual.clinica_id:
+                clinica_huerfana = db.query(models.Clinica).filter(
+                    models.Clinica.id == clinica_huerfana_id
+                ).first()
+                if clinica_huerfana:
+                    db.delete(clinica_huerfana)
+                    db.flush()
+
+            huerfana_limpiada = True
+
+        # Actualizamos el username al Gmail verificado conservando id y clinica_id intactos
+        usuario_actual.username = email_google
+        if usuario_actual.clinica and not usuario_actual.clinica.codigo_invitacion:
+            usuario_actual.clinica.codigo_invitacion = generar_codigo_invitacion_unico(db)
+
+        db.commit()
+        db.refresh(usuario_actual)
+
+        return {
+            "mensaje": "¡Cuenta vinculada exitosamente con tu Gmail real! Todos tus pacientes y expedientes siguen intactos.",
+            "email": usuario_actual.username,
+            "nombre_clinica": usuario_actual.clinica.nombre if usuario_actual.clinica else "",
+            "codigo_invitacion": usuario_actual.clinica.codigo_invitacion if usuario_actual.clinica else "",
+            "cuenta_huerfana_limpiada": huerfana_limpiada
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as err:
+        db.rollback()
+        print(f"❌ Error vinculando cuenta con Google: {err}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno al vincular la cuenta de Google."
+        )
+
 
 @app.put("/usuarios/actualizar")
 def actualizar_perfil(
@@ -126,12 +502,23 @@ def actualizar_perfil(
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     
-    if usuario.clinica:
-        usuario.clinica.nombre = datos.nombre_clinica
+    if usuario.clinica and datos.nombre_clinica and datos.nombre_clinica.strip():
+        nombre_nuevo = datos.nombre_clinica.strip()
+        if nombre_nuevo.lower() != usuario.clinica.nombre.lower():
+            conflicto_nombre = db.query(models.Clinica).filter(
+                func.lower(models.Clinica.nombre) == nombre_nuevo.lower(),
+                models.Clinica.id != usuario.clinica.id
+            ).first()
+            if conflicto_nombre:
+                raise HTTPException(status_code=400, detail="Ya existe otra clínica registrada con ese nombre.")
+        usuario.clinica.nombre = nombre_nuevo
     
     if datos.password:
-        if not datos.password_actual or not pwd_context.verify(datos.password_actual, usuario.hashed_password):
-            raise HTTPException(status_code=400, detail="La contraseña actual es incorrecta.")
+        # Si la cuenta ya tenía contraseña manual, exigimos validar password_actual.
+        # Si fue creada exclusivamente con Google OAuth, le permitimos establecer su primera contraseña manual.
+        if not es_cuenta_solo_google(usuario.hashed_password):
+            if not datos.password_actual or not verificar_password_seguro(datos.password_actual, usuario.hashed_password):
+                raise HTTPException(status_code=400, detail="La contraseña actual es incorrecta.")
         
         if len(datos.password) < 8:
             raise HTTPException(status_code=400, detail="La nueva contraseña debe tener mínimo 8 caracteres.")
@@ -143,7 +530,7 @@ def actualizar_perfil(
 
 @app.post("/usuarios/recuperar")
 def recuperar_password(datos: RecuperarPassword, db: Session = Depends(get_db)):
-    usuario = db.query(Usuario).filter(Usuario.username == datos.email).first()
+    usuario = db.query(Usuario).filter(func.lower(Usuario.username) == datos.email.strip().lower()).first()
     
     if not usuario:
         raise HTTPException(status_code=404, detail="Este correo no está registrado en HorizonFlow.")
@@ -158,7 +545,10 @@ def recuperar_password(datos: RecuperarPassword, db: Session = Depends(get_db)):
 
 @app.post("/clinicas", response_model=schemas.ClinicaOut)
 def crear_clinica(clinica: schemas.ClinicaCreate, db: Session = Depends(get_db)):
-    nueva_clinica = models.Clinica(nombre=clinica.nombre)
+    nueva_clinica = models.Clinica(
+        nombre=clinica.nombre,
+        codigo_invitacion=generar_codigo_invitacion_unico(db)
+    )
     db.add(nueva_clinica)
     db.commit()
     db.refresh(nueva_clinica)
@@ -166,30 +556,11 @@ def crear_clinica(clinica: schemas.ClinicaCreate, db: Session = Depends(get_db))
 
 @app.post("/usuarios")
 def crear_usuario(usuario: schemas.UsuarioCreate, db: Session = Depends(get_db)):
-    db_user = db.query(models.Usuario).filter(models.Usuario.username == usuario.email).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Este correo ya está registrado")
-
-    hashed_pwd = pwd_context.hash(usuario.password)
-
-    nueva_clinica = models.Clinica(nombre=usuario.nombre_clinica)
-    db.add(nueva_clinica)
-    db.commit()
-    db.refresh(nueva_clinica)
-
-    nuevo_usuario = models.Usuario(
-        username=usuario.email, 
-        hashed_password=hashed_pwd,
-        rol=usuario.rol, 
-        clinica_id=nueva_clinica.id, 
-        anticipacion_alerta=24 
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="El registro manual sin verificación ha sido deshabilitado por seguridad. Por favor regístrate usando Google OAuth en la pestaña Sign up."
     )
 
-    db.add(nuevo_usuario)
-    db.commit()
-    db.refresh(nuevo_usuario)
-    
-    return {"mensaje": "Usuario y Clínica creados con éxito"}
 
 
 # ==========================================

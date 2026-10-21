@@ -8,6 +8,7 @@ class Clinica(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String, unique=True, index=True)
+    codigo_invitacion = Column(String, unique=True, index=True, nullable=True)
 
     # 🌟 Asegúrate de que apunte exactamente a "clinica" en minúsculas y singular
     pacientes = relationship("Paciente", back_populates="clinica")

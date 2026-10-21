@@ -112,11 +112,13 @@ class ClinicaCreate(BaseModel):
 class ClinicaOut(BaseModel):
     id: int
     nombre: str
+    codigo_invitacion: Optional[str] = None
     class Config:
         from_attributes = True
 
 class UsuarioCreate(BaseModel):
-    nombre_clinica: str  
+    nombre_clinica: Optional[str] = None
+    codigo_invitacion: Optional[str] = None
     email: str
     password: str
     rol: str  # Le quitamos el = "psicologo" para que obligue a React a mandar el rol real
@@ -133,6 +135,19 @@ class UsuarioOut(BaseModel):
 class UsuarioLogin(BaseModel):
     email: str
     password: str
+
+
+class GoogleAuthRequest(BaseModel):
+    credential: str
+    modo: Optional[str] = "login"  # "login" | "signup"
+    tipo_clinica: Optional[str] = "nueva"  # "nueva" | "existente"
+    nombre_clinica: Optional[str] = None
+    codigo_invitacion: Optional[str] = None
+    rol: Optional[str] = "psicologo"
+
+
+class GoogleLinkRequest(BaseModel):
+    credential: str
     
     
 # Molde para cuando el psicólogo CREA un evento nuevo
