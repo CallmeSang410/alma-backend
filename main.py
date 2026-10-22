@@ -1,8 +1,11 @@
 import os
+import re
+import time
 import secrets
 from datetime import datetime, timedelta
 from typing import List
 
+import requests
 from fastapi import FastAPI, Depends, HTTPException, Body, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
@@ -48,18 +51,59 @@ app.add_middleware(
 )
 
 
+# Endpoint ultraligero para warm-up (precalentamiento en Render) sin tocar Base de Datos
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
 api_key = os.getenv("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 else:
     print("⚠️ ADVERTENCIA: No se encontró GEMINI_API_KEY en el archivo .env")
 
-# 4. SEGURIDAD Y TOKENS
+# 4. SEGURIDAD, TOKENS Y CACHÉ EN MEMORIA PARA LLAVES PÚBLICAS DE GOOGLE OAUTH
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_OAUTH_PREFIX = "!GOOGLE_OAUTH!"
 ALFABETO_CODIGO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+class CachedGoogleRequest(google_requests.Request):
+    """
+    Reutiliza una única instancia de requests.Session (Keep-Alive TLS) y almacena en
+    memoria RAM los certificados públicos de Google respetando Cache-Control (max-age),
+    reduciendo la verificación de id_token de ~300ms a ~1ms.
+    """
+    def __init__(self):
+        session = requests.Session()
+        super().__init__(session=session)
+        self._certs_cache = {}
+
+    def __call__(self, url, method="GET", body=None, headers=None, timeout=None, **kwargs):
+        if method.upper() == "GET":
+            ahora = time.time()
+            cached_entry = self._certs_cache.get(url)
+            if cached_entry and ahora < cached_entry["expires_at"]:
+                return cached_entry["response"]
+
+            response = super().__call__(url, method=method, body=body, headers=headers, timeout=timeout, **kwargs)
+            if response.status == 200:
+                cache_control = response.headers.get("Cache-Control", "") or response.headers.get("cache-control", "")
+                match = re.search(r"max-age=(\d+)", cache_control)
+                ttl = int(match.group(1)) if match else 3600
+                self._certs_cache[url] = {
+                    "response": response,
+                    "expires_at": ahora + max(ttl, 300)
+                }
+            return response
+
+        return super().__call__(url, method=method, body=body, headers=headers, timeout=timeout, **kwargs)
+
+
+GOOGLE_CACHED_REQUEST = CachedGoogleRequest()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -127,7 +171,7 @@ asegurar_migracion_bd()
 
 
 def validar_token_google(credential: str) -> dict:
-    """Valida criptográficamente el ID Token de Google y devuelve su payload verificado."""
+    """Valida criptográficamente el ID Token de Google usando sesión con caché en memoria."""
     client_id = os.getenv("GOOGLE_CLIENT_ID") or GOOGLE_CLIENT_ID
     if not client_id:
         raise HTTPException(
@@ -138,7 +182,7 @@ def validar_token_google(credential: str) -> dict:
     try:
         idinfo = id_token.verify_oauth2_token(
             credential,
-            google_requests.Request(),
+            GOOGLE_CACHED_REQUEST,
             client_id,
             clock_skew_in_seconds=10
         )
