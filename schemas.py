@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime # <-- NUEVO: Importamos el manejador de tiempo
 from typing import List, Optional, Dict, Any
 
@@ -22,9 +22,9 @@ class PacienteCreate(PacienteBase):
 # Molde de ENTRADA (Lo que React nos manda al guardar)
 class CitaCreate(BaseModel):
     motivo: str
-    fecha_cita: datetime 
+    fecha_cita: datetime
     estado: str
-    modalidad: str 
+    modalidad: str
     tarifa: float = 0.0 # 🌟 ¡NUEVO CAMPO FINANCIERO! (Default para que no explote)
 
 # Molde de SALIDA (Lo que le devolvemos a React para pintar las tarjetas)
@@ -33,19 +33,19 @@ class CitaOut(BaseModel):
     motivo: str
     fecha_cita: datetime
     estado: str
-    modalidad: str 
+    modalidad: str
     tarifa: float # 🌟 ¡Para que el dashboard pueda sumar los ingresos!
     paciente_id: int
 
     class Config:
         from_attributes = True
-        
+
 # 🌟 EL MOLDE DE SALIDA DEFINITIVO Y CORRECTO:
 class PacienteOut(PacienteBase):
     id: int
     folio_visual: Optional[int] = None  # 🌟 ¡NUEVO! El pase VIP para que React lo vea
-    clinica_id: int              
-    citas: List[CitaOut] = []    
+    clinica_id: int
+    citas: List[CitaOut] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -65,13 +65,13 @@ class ReporteCreate(BaseModel):
     motivo_consulta: str
     notas_psicologo: str
     pruebas_aplicadas: Optional[str] = None
-    
+
     # 🌟 AHORA TODO ESTO ES OPCIONAL (Para permitir el guardado rápido)
-    analisis_ia: Optional[str] = None 
+    analisis_ia: Optional[str] = None
     diagnostico_final: Optional[str] = None
     recomendaciones: Optional[str] = None
     plan_accion: Optional[str] = None
-    
+
     # 🌟 NUEVO: El campo espía que nos dice si hay que actualizar al paciente
     actualizar_diagnostico_paciente: Optional[str] = None
 
@@ -97,13 +97,13 @@ class ReporteOut(BaseModel):
     plan_accion: Optional[str] = None
     fecha_generacion: datetime
     cita_id: int
-    
+
     # 🌟 LA GAVETA MÁGICA: Aquí vendrán los datos del paciente unidos
-    paciente_data: Optional[PacienteParaReporte] = None 
+    paciente_data: Optional[PacienteParaReporte] = None
 
     class Config:
         from_attributes = True
-        
+
 # --- MOLDES PARA USUARIOS Y CLÍNICAS ---
 
 class ClinicaCreate(BaseModel):
@@ -131,7 +131,7 @@ class UsuarioOut(BaseModel):
     clinica_id: int
     class Config:
         from_attributes = True
-        
+
 class UsuarioLogin(BaseModel):
     email: str
     password: str
@@ -148,8 +148,8 @@ class GoogleAuthRequest(BaseModel):
 
 class GoogleLinkRequest(BaseModel):
     credential: str
-    
-    
+
+
 # Molde para cuando el psicólogo CREA un evento nuevo
 class EventoVidaCreate(BaseModel):
     titulo: str
@@ -158,7 +158,7 @@ class EventoVidaCreate(BaseModel):
     impacto: str
     nota_titulo: Optional[str] = None      # 🌟 NUEVO
     nota_contenido: Optional[str] = None   # 🌟 NUEVO
-    
+
 
 class EventoVidaOut(BaseModel):
     id: int
@@ -181,7 +181,7 @@ class MensajeChat(BaseModel):
 
 class ChatbotRequest(BaseModel):
     historial: List[MensajeChat]
-    
+
 # Cuando el paciente manda la encuesta
 class EncuestaCreate(BaseModel):
     q1_satisfaccion_general: int
@@ -194,7 +194,7 @@ class EncuestaCreate(BaseModel):
     q8_confianza_seguridad: str
     q9_indice_recomendacion: str
     q10_comentarios: Optional[str] = None
-    
+
 
 # Cuando React pide las encuestas (con todos los datos)
 class EncuestaOut(EncuestaCreate):
@@ -213,8 +213,8 @@ class ComentarioFeedback(BaseModel):
 class TusStatsDePaciente(BaseModel): # Como sea que se llame tu clase
     total: int
     crecimiento_mes: str
-    historial: Dict[str, int] = {} # 🌟 EL PASE VIP PARA QUE LLEGUE A REACT
-    
+    historial: Dict[str, int] = Field(default_factory=dict) # 🌟 EL PASE VIP PARA QUE LLEGUE A REACT
+
 class PerfilUpdate(BaseModel):
     nombre_clinica: str
     password_actual: Optional[str] = None # 🌟 Recibimos la vieja

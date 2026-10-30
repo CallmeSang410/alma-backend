@@ -2,6 +2,7 @@ import os
 import re
 import time
 import secrets
+import logging
 from datetime import datetime, timedelta
 from typing import List
 
@@ -29,25 +30,21 @@ from models import Paciente, Cita, EncuestaExperiencia, Usuario
 load_dotenv()
 
 app = FastAPI()
+logger = logging.getLogger("horizonflow")
 
 # 2. CONFIGURACIÓN DE CORS (Una sola vez y bien hecha)
-origenes_permitidos = [
-    "http://localhost:5173", # La dirección de tu React
-]
-
-origins = [
-    "https://alma-front-6j9ue2p7e-callmesang410s-projects.vercel.app",  # Tu URL de Vercel actual
-    "https://alma-front-end-mu.vercel.app",                           # Tu URL principal de Vercel
-    "http://localhost:5173",                                          # Por si corres el frontend local
-    "http://127.0.0.1:5173",
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "https://horizonflowai.vercel.app").split(",")
+    if origin.strip()
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 👈 Nota: Usar ["*"] permite CUALQUIER origen. Es ideal para pruebas rápidas y quitar el error de inmediato.
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Permite GET, POST, PUT, DELETE, etc.
-    allow_headers=["*"],  # Permite cabeceras como Authorization, Content-Type, etc.
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -573,30 +570,23 @@ def actualizar_perfil(
     return {"mensaje": "Perfil actualizado con éxito"}
 
 @app.post("/usuarios/recuperar")
-def recuperar_password(datos: RecuperarPassword, db: Session = Depends(get_db)):
-    usuario = db.query(Usuario).filter(func.lower(Usuario.username) == datos.email.strip().lower()).first()
-    
-    if not usuario:
-        raise HTTPException(status_code=404, detail="Este correo no está registrado en HorizonFlow.")
-    
-    if len(datos.nueva_password) < 8:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres.")
-        
-    usuario.hashed_password = get_password_hash(datos.nueva_password)
-    db.commit()
-    
-    return {"mensaje": "Contraseña recuperada exitosamente"}
+def recuperar_password(datos: RecuperarPassword):
+    # No se permite cambiar una contraseña solo con el correo recibido.
+    # Este endpoint debe reemplazarse por un flujo con token de un solo uso
+    # enviado mediante un canal verificado antes de habilitarse nuevamente.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="La recuperación directa está deshabilitada. Solicita un enlace seguro de recuperación.",
+    )
 
 @app.post("/clinicas", response_model=schemas.ClinicaOut)
-def crear_clinica(clinica: schemas.ClinicaCreate, db: Session = Depends(get_db)):
-    nueva_clinica = models.Clinica(
-        nombre=clinica.nombre,
-        codigo_invitacion=generar_codigo_invitacion_unico(db)
+def crear_clinica(clinica: schemas.ClinicaCreate):
+    # La creación de clínicas ocurre dentro del onboarding OAuth; no se deja
+    # expuesta como endpoint anónimo para evitar abuso y registros huérfanos.
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="La creación directa de clínicas está deshabilitada.",
     )
-    db.add(nueva_clinica)
-    db.commit()
-    db.refresh(nueva_clinica)
-    return nueva_clinica
 
 @app.post("/usuarios")
 def crear_usuario(usuario: schemas.UsuarioCreate, db: Session = Depends(get_db)):
@@ -652,16 +642,16 @@ def leer_pacientes(
     return pacientes
 
 @app.get("/pacientes/{paciente_id}", response_model=schemas.PacienteOut)
-def buscar_paciente(paciente_id: int, db: Session = Depends(get_db)):
-    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+def buscar_paciente(paciente_id: int, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id, models.Paciente.clinica_id == current_user.clinica_id).first()
     
     if paciente_encontrado is None:
         raise HTTPException(status_code=404, detail="El paciente no existe en HorizonFlow")
     return paciente_encontrado
 
 @app.put("/pacientes/{paciente_id}", response_model=schemas.PacienteOut)
-def actualizar_paciente(paciente_id: int, paciente_actualizado: schemas.PacienteCreate, db: Session = Depends(get_db)):
-    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+def actualizar_paciente(paciente_id: int, paciente_actualizado: schemas.PacienteCreate, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id, models.Paciente.clinica_id == current_user.clinica_id).first()
     
     if paciente_encontrado is None:
         raise HTTPException(status_code=404, detail="El paciente no existe")
@@ -679,8 +669,8 @@ def actualizar_paciente(paciente_id: int, paciente_actualizado: schemas.Paciente
     return paciente_encontrado
 
 @app.delete("/pacientes/{paciente_id}")
-def eliminar_paciente(paciente_id: int, db: Session = Depends(get_db)):
-    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+def eliminar_paciente(paciente_id: int, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id, models.Paciente.clinica_id == current_user.clinica_id).first()
     
     if not paciente_encontrado:
         raise HTTPException(status_code=404, detail="El paciente no existe")
@@ -700,7 +690,7 @@ def eliminar_paciente(paciente_id: int, db: Session = Depends(get_db)):
         
     except Exception as e:
         db.rollback() 
-        print(f"❌ ERROR NUCLEAR AL BORRAR: {e}")
+        logger.exception("Error eliminando paciente")
         raise HTTPException(status_code=500, detail="Error interno al borrar las dependencias del paciente.")
 
 
@@ -708,8 +698,11 @@ def eliminar_paciente(paciente_id: int, db: Session = Depends(get_db)):
 # 📅 RUTAS DE CITAS
 # ==========================================
 @app.post("/pacientes/{paciente_id}/citas", response_model=schemas.CitaOut)
-def crear_cita(paciente_id: int, cita: schemas.CitaCreate, db: Session = Depends(get_db)):
-    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+def crear_cita(paciente_id: int, cita: schemas.CitaCreate, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    paciente_encontrado = db.query(models.Paciente).filter(
+        models.Paciente.id == paciente_id,
+        models.Paciente.clinica_id == current_user.clinica_id,
+    ).first()
     if paciente_encontrado is None:
         raise HTTPException(status_code=404, detail="No puedes agendarle una cita a un paciente que no existe")
 
@@ -728,8 +721,8 @@ def crear_cita(paciente_id: int, cita: schemas.CitaCreate, db: Session = Depends
     return nueva_cita
 
 @app.put("/citas/{cita_id}", response_model=schemas.CitaOut)
-def actualizar_cita(cita_id: int, cita_actualizada: schemas.CitaCreate, db: Session = Depends(get_db)):
-    cita_encontrada = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+def actualizar_cita(cita_id: int, cita_actualizada: schemas.CitaCreate, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    cita_encontrada = db.query(models.Cita).join(models.Paciente).filter(models.Cita.id == cita_id, models.Paciente.clinica_id == current_user.clinica_id).first()
     
     if not cita_encontrada:
         raise HTTPException(status_code=404, detail="Cita no encontrada")
@@ -769,8 +762,8 @@ def completar_cita(
     }
 
 @app.delete("/citas/{cita_id}")
-def eliminar_cita(cita_id: int, db: Session = Depends(get_db)):
-    cita_encontrada = db.query(models.Cita).filter(models.Cita.id == cita_id).first()
+def eliminar_cita(cita_id: int, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    cita_encontrada = db.query(models.Cita).join(models.Paciente).filter(models.Cita.id == cita_id, models.Paciente.clinica_id == current_user.clinica_id).first()
     
     if not cita_encontrada:
         raise HTTPException(status_code=404, detail="Cita no encontrada")
@@ -794,8 +787,11 @@ def obtener_citas(db: Session = Depends(get_db), current_user: models.Usuario = 
 # ⏳ RUTAS DE EVENTOS (LÍNEA DE TIEMPO)
 # ==========================================
 @app.post("/pacientes/{paciente_id}/eventos", response_model=schemas.EventoVidaOut)
-def crear_evento_vida(paciente_id: int, evento: schemas.EventoVidaCreate, db: Session = Depends(get_db)):
-    paciente_encontrado = db.query(models.Paciente).filter(models.Paciente.id == paciente_id).first()
+def crear_evento_vida(paciente_id: int, evento: schemas.EventoVidaCreate, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    paciente_encontrado = db.query(models.Paciente).filter(
+        models.Paciente.id == paciente_id,
+        models.Paciente.clinica_id == current_user.clinica_id,
+    ).first()
     if not paciente_encontrado:
         raise HTTPException(status_code=404, detail="El paciente no existe")
 
@@ -815,12 +811,12 @@ def crear_evento_vida(paciente_id: int, evento: schemas.EventoVidaCreate, db: Se
     return nuevo_evento
 
 @app.get("/pacientes/{paciente_id}/eventos", response_model=List[schemas.EventoVidaOut])
-def obtener_eventos_paciente(paciente_id: int, db: Session = Depends(get_db)):
-    return db.query(models.EventoVida).filter(models.EventoVida.paciente_id == paciente_id).all()
+def obtener_eventos_paciente(paciente_id: int, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    return db.query(models.EventoVida).join(models.Paciente).filter(models.EventoVida.paciente_id == paciente_id, models.Paciente.clinica_id == current_user.clinica_id).all()
 
 @app.put("/eventos/{evento_id}", response_model=schemas.EventoVidaOut)
-def actualizar_evento(evento_id: int, evento_actualizado: schemas.EventoVidaCreate, db: Session = Depends(get_db)):
-    evento_db = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
+def actualizar_evento(evento_id: int, evento_actualizado: schemas.EventoVidaCreate, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    evento_db = db.query(models.EventoVida).join(models.Paciente).filter(models.EventoVida.id == evento_id, models.Paciente.clinica_id == current_user.clinica_id).first()
     if not evento_db:
         raise HTTPException(status_code=404, detail="Evento no encontrado")
     
@@ -836,8 +832,8 @@ def actualizar_evento(evento_id: int, evento_actualizado: schemas.EventoVidaCrea
     return evento_db
 
 @app.delete("/eventos/{evento_id}")
-def eliminar_evento(evento_id: int, db: Session = Depends(get_db)):
-    evento_db = db.query(models.EventoVida).filter(models.EventoVida.id == evento_id).first()
+def eliminar_evento(evento_id: int, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    evento_db = db.query(models.EventoVida).join(models.Paciente).filter(models.EventoVida.id == evento_id, models.Paciente.clinica_id == current_user.clinica_id).first()
     if not evento_db:
         raise HTTPException(status_code=404, detail="Evento no encontrado")
     db.delete(evento_db)
@@ -884,7 +880,7 @@ def obtener_todos_los_reportes(db: Session = Depends(get_db), current_user: mode
     return respuesta
 
 @app.post("/reportes/analizar")
-def generar_analisis_ia(datos: schemas.AnalisisIARequest):
+def generar_analisis_ia(datos: schemas.AnalisisIARequest, current_user: models.Usuario = Depends(get_current_user)):
     prompt_maestro = f"""
     Actúa como un neuropsicólogo clínico senior y supervisor de casos con 20 años de experiencia. Tu tarea es analizar las notas iniciales de una sesión y redactar un análisis técnico-profesional de alto nivel para ayudar al clínico a formular su diagnóstico.
 
@@ -922,14 +918,21 @@ def generar_analisis_ia(datos: schemas.AnalisisIARequest):
         return {"analisis": respuesta_ia.text}
         
     except Exception as e:
-        print(f"❌ Error en Gemini (Reportes): {e}")
+        logger.exception("Error en Gemini (Reportes)")
         raise HTTPException(status_code=500, detail="Error interno al procesar el análisis de IA")
 
 @app.post("/citas/{cita_id}/reporte", response_model=schemas.ReporteOut)
-def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Session = Depends(get_db)):
-    cita_encontrada = db.query(models.Cita).options(
-        joinedload(models.Cita.paciente)
-    ).filter(models.Cita.id == cita_id).first()
+def crear_reporte_session(cita_id: int, reporte: schemas.ReporteCreate, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    cita_encontrada = (
+        db.query(models.Cita)
+        .options(joinedload(models.Cita.paciente))
+        .join(models.Paciente)
+        .filter(
+            models.Cita.id == cita_id,
+            models.Paciente.clinica_id == current_user.clinica_id,
+        )
+        .first()
+    )
     
     if not cita_encontrada:
         raise HTTPException(status_code=404, detail="Cita no encontrada")
@@ -1285,7 +1288,7 @@ def obtener_metricas_negocio(db: Session = Depends(get_db), current_user: models
 # 💬 RUTAS DE CHATBOT Y ENCUESTAS
 # ==========================================
 @app.post("/soporte/chat")
-def chat_soporte_alma(request: schemas.ChatbotRequest):
+def chat_soporte_alma(request: schemas.ChatbotRequest, current_user: models.Usuario = Depends(get_current_user)):
     instrucciones = """
     Eres ALMA, el Asistente Virtual Inteligente de Soporte Técnico de 'HorizonFlow'. 
     HorizonFlow es un avanzado software SaaS de gestión clínica, diseñado estratégicamente para psicólogos profesionales y estudiantes de psicología en prácticas.
@@ -1353,8 +1356,8 @@ def chat_soporte_alma(request: schemas.ChatbotRequest):
         return {"respuesta": respuesta_ia.text}
 
     except Exception as e:
-        print(f"❌ Error en Chatbot: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Error en Chatbot")
+        raise HTTPException(status_code=500, detail="Error interno al procesar la solicitud")
 
 def clasificar_comentario(texto_paciente: str) -> str:
     """
