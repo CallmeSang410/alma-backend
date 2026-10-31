@@ -126,3 +126,16 @@ class EncuestaExperiencia(Base):
     # ¿A qué psicólogo le hicieron esta encuesta?
     usuario_id = Column(Integer, ForeignKey("usuarios.id"))
     usuario = relationship("Usuario", back_populates="encuestas")
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(String(64), index=True, nullable=False)  # Hash SHA-256 en hex (64 caracteres)
+    expiracion = Column(DateTime, nullable=False)
+    usado = Column(Boolean, default=False, nullable=False)
+    creado_en = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    usuario = relationship("Usuario")
+

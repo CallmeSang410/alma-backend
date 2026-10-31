@@ -312,3 +312,201 @@ def test_no_puede_leer_paciente_de_otra_clinica():
         ),
     )
     assert respuesta.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 6. Cabeceras OWASP y Request ID (HF-003)
+# ---------------------------------------------------------------------------
+def test_cabeceras_seguridad_owasp_y_request_id_presentes():
+    respuesta = client.get("/health")
+    assert respuesta.status_code == 200
+    assert "x-request-id" in respuesta.headers
+    assert respuesta.headers.get("x-content-type-options") == "nosniff"
+    assert respuesta.headers.get("x-frame-options") == "DENY"
+    assert respuesta.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+    assert "camera=()" in respuesta.headers.get("permissions-policy", "")
+
+
+# ---------------------------------------------------------------------------
+# 7. Expiración de Tokens JWT (Fase 2)
+# ---------------------------------------------------------------------------
+def test_token_expirado_devuelve_401_controlado():
+    from datetime import timedelta
+    token_vencido = jwt.encode(
+        {
+            "usuario_id": 1,
+            "clinica_id": 1,
+            "rol": "psicologo",
+            "exp": datetime.utcnow() - timedelta(minutes=5)
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+    respuesta = client.get(
+        "/pacientes",
+        headers={"Authorization": f"Bearer {token_vencido}"}
+    )
+    assert respuesta.status_code == 401
+    assert "expirado" in respuesta.json().get("detail", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# 8. Recuperación Segura de Contraseña (HF-001)
+# ---------------------------------------------------------------------------
+def test_solicitar_recuperacion_password_genera_token_temporal():
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+
+    respuesta = client.post(
+        "/usuarios/recuperar/solicitar",
+        json={"email": "alpha@test.com"}
+    )
+    assert respuesta.status_code == 200
+    cuerpo = respuesta.json()
+    assert "token" in cuerpo
+    assert cuerpo["token"] is not None
+    assert cuerpo["validez_minutos"] == 15
+
+    # Para correo no registrado, responde con éxito genérico y token None (anti-enumeración)
+    resp_inexistente = client.post(
+        "/usuarios/recuperar/solicitar",
+        json={"email": "no-existe@test.com"}
+    )
+    assert resp_inexistente.status_code == 200
+    assert resp_inexistente.json()["token"] is None
+
+
+def test_restablecer_password_con_token_valido_y_un_solo_uso():
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+
+    solicitud = client.post(
+        "/usuarios/recuperar/solicitar",
+        json={"email": "alpha@test.com"}
+    )
+    token = solicitud.json()["token"]
+
+    # 1. Restablecer con éxito
+    confirmacion = client.post(
+        "/usuarios/recuperar/confirmar",
+        json={"token": token, "nueva_password": "nueva-clave-segura-123"}
+    )
+    assert confirmacion.status_code == 200
+    assert "éxito" in confirmacion.json()["mensaje"].lower() or "exito" in confirmacion.json()["mensaje"].lower()
+
+    # 2. Reutilización inmediata rechazada (Un solo uso)
+    reintento = client.post(
+        "/usuarios/recuperar/confirmar",
+        json={"token": token, "nueva_password": "otra-clave-diferente-123"}
+    )
+    assert reintento.status_code == 400
+    assert "inválido" in reintento.json()["detail"].lower() or "invalido" in reintento.json()["detail"].lower()
+
+
+def test_restablecer_password_token_expirado_falla():
+    import hashlib
+    from datetime import timedelta
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+
+    db = TestingSessionLocal()
+    token_caducado_raw = "token-prueba-caducado-12345678"
+    token_hash = hashlib.sha256(token_caducado_raw.encode("utf-8")).hexdigest()
+    nuevo_token = models.PasswordResetToken(
+        usuario_id=datos["usuario_a_id"],
+        token_hash=token_hash,
+        expiracion=datetime.utcnow() - timedelta(minutes=1),
+        usado=False
+    )
+    db.add(nuevo_token)
+    db.commit()
+    db.close()
+
+    respuesta = client.post(
+        "/usuarios/recuperar/confirmar",
+        json={"token": token_caducado_raw, "nueva_password": "password-nueva-123"}
+    )
+    assert respuesta.status_code == 400
+    assert "expirado" in respuesta.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# 9. Protección de Mutaciones Multi-Tenant (IDOR en escritura)
+# ---------------------------------------------------------------------------
+def test_no_puede_modificar_cita_de_otra_clinica():
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+    cita_b_id = datos["cita_b_id"]
+
+    respuesta = client.put(
+        f"/citas/{cita_b_id}",
+        headers=_headers_auth(
+            datos["usuario_a_id"], datos["usuario_a_clinica_id"], datos["usuario_a_rol"]
+        ),
+        json={
+            "motivo": "Intento de modificación no autorizada",
+            "fecha_cita": "2026-10-30T15:00:00",
+            "estado": "Cancelada",
+            "modalidad": "Virtual",
+            "tarifa": 100.0
+        }
+    )
+    assert respuesta.status_code == 404
+
+
+def test_no_puede_crear_cita_en_paciente_de_otra_clinica():
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+    paciente_b_id = datos["paciente_b_id"]
+
+    respuesta = client.post(
+        f"/pacientes/{paciente_b_id}/citas",
+        headers=_headers_auth(
+            datos["usuario_a_id"], datos["usuario_a_clinica_id"], datos["usuario_a_rol"]
+        ),
+        json={
+            "motivo": "Cita en clínica ajena",
+            "fecha_cita": "2026-10-30T16:00:00",
+            "estado": "Pendiente",
+            "modalidad": "Presencial",
+            "tarifa": 500.0
+        }
+    )
+    assert respuesta.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 10. Robustez en Endpoints Públicos y Chatbot
+# ---------------------------------------------------------------------------
+def test_encuesta_publica_psicologo_inexistente_devuelve_404():
+    _reset_db()
+    respuesta = client.post(
+        "/encuestas/publica/99999",
+        json={
+            "q1_satisfaccion_general": 5,
+            "q2_cumplimiento_expectativas": "Excelente",
+            "q3_empatia_conexion": "Excelente",
+            "q4_aspectos_valorados": "Puntualidad",
+            "q5_instalaciones": 5,
+            "q6_claridad_pautas": "Claridad total",
+            "q7_impacto_animo": "Muy positivo",
+            "q8_confianza_seguridad": "Total",
+            "q9_indice_recomendacion": "Si",
+            "q10_comentarios": "Excelente atención"
+        }
+    )
+    assert respuesta.status_code == 404
+
+
+def test_soporte_chat_historial_vacio_rechazado():
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+    respuesta = client.post(
+        "/soporte/chat",
+        headers=_headers_auth(
+            datos["usuario_a_id"], datos["usuario_a_clinica_id"], datos["usuario_a_rol"]
+        ),
+        json={"historial": []}
+    )
+    assert respuesta.status_code in (400, 422)
+

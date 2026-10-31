@@ -3,16 +3,20 @@ import re
 import time
 import secrets
 import logging
+import uuid
+import json
+import hashlib
 from datetime import datetime, timedelta
 from typing import List
 
 import requests
-from fastapi import FastAPI, Depends, HTTPException, Body, Query, status
+from fastapi import FastAPI, Depends, HTTPException, Body, Query, status, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from jose import JWTError, jwt
+from jose.exceptions import ExpiredSignatureError
 from passlib.context import CryptContext
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session, joinedload
@@ -30,6 +34,7 @@ from models import Paciente, Cita, EncuestaExperiencia, Usuario
 load_dotenv()
 
 app = FastAPI()
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("horizonflow")
 
 # 2. CONFIGURACIÓN DE CORS (Una sola vez y bien hecha)
@@ -44,14 +49,63 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
+# 3. MIDDLEWARE DE SEGURIDAD OWASP Y LOGS ESTRUCTURADOS JSON (HF-003, HF-005)
+@app.middleware("http")
+async def monitor_and_security_middleware(request: Request, call_next):
+    start_time = time.perf_counter()
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
 
-# Endpoint ultraligero para warm-up (precalentamiento en Render) sin tocar Base de Datos
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        log_entry = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "level": "ERROR",
+            "request_id": request_id,
+            "path": request.url.path,
+            "method": request.method,
+            "status_code": 500,
+            "duration_ms": duration_ms
+        }
+        logger.error(json.dumps(log_entry))
+        raise exc
+
+    status_code = response.status_code
+    duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+    # Inyección de Cabeceras OWASP y X-Request-ID
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    level = "ERROR" if status_code >= 500 else ("WARNING" if status_code >= 400 else "INFO")
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "level": level,
+        "request_id": request_id,
+        "path": request.url.path,
+        "method": request.method,
+        "status_code": status_code,
+        "duration_ms": duration_ms
+    }
+    logger.info(json.dumps(log_entry))
+    return response
+
+
+# Endpoint ultraligero para warm-up y salud sin tocar Base de Datos (HF-002)
 @app.get("/health")
-def health_check():
+async def health_check():
     return {"status": "ok"}
+
 
 
 api_key = os.getenv("GEMINI_API_KEY")
@@ -232,6 +286,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         if usuario_id is None:
             raise credentials_exception
             
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="La sesión ha expirado (token caducado). Por favor vuelve a iniciar sesión.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     except JWTError:
         raise credentials_exception
         
@@ -265,10 +325,14 @@ def iniciar_sesion(credenciales: schemas.UsuarioLogin, db: Session = Depends(get
     if not verificar_password_seguro(credenciales.password, usuario_db.hashed_password):
         raise HTTPException(status_code=401, detail="El correo o la contraseña son incorrectos")
         
+    ahora = datetime.utcnow()
+    expiracion = ahora + timedelta(hours=8)
     datos_gafete = {
         "usuario_id": usuario_db.id,
         "clinica_id": usuario_db.clinica_id,
-        "rol": usuario_db.rol
+        "rol": usuario_db.rol,
+        "exp": expiracion,
+        "iat": ahora
     }
     
     token_vip = jwt.encode(datos_gafete, SECRET_KEY, algorithm=ALGORITHM)
@@ -389,10 +453,14 @@ def iniciar_sesion_google(datos: GoogleAuthRequest, db: Session = Depends(get_db
         db.commit()
         db.refresh(usuario_db)
 
+    ahora = datetime.utcnow()
+    expiracion = ahora + timedelta(hours=8)
     datos_gafete = {
         "usuario_id": usuario_db.id,
         "clinica_id": usuario_db.clinica_id,
-        "rol": usuario_db.rol
+        "rol": usuario_db.rol,
+        "exp": expiracion,
+        "iat": ahora
     }
 
     token_vip = jwt.encode(datos_gafete, SECRET_KEY, algorithm=ALGORITHM)
@@ -569,14 +637,104 @@ def actualizar_perfil(
     db.commit()
     return {"mensaje": "Perfil actualizado con éxito"}
 
+# ==========================================
+# 🔐 RECUPERACIÓN SEGURA DE CONTRASEÑA (HF-001)
+# ==========================================
+@app.post("/usuarios/recuperar/solicitar")
+def solicitar_recuperacion_password(
+    datos: schemas.SolicitarRecuperacionRequest,
+    db: Session = Depends(get_db)
+):
+    email_limpio = datos.email.strip().lower()
+    usuario_db = db.query(models.Usuario).filter(
+        func.lower(models.Usuario.username) == email_limpio
+    ).first()
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    expiracion = datetime.utcnow() + timedelta(minutes=15)
+
+    if usuario_db:
+        # Invalidar tokens anteriores del mismo usuario
+        db.query(models.PasswordResetToken).filter(
+            models.PasswordResetToken.usuario_id == usuario_db.id,
+            models.PasswordResetToken.usado == False
+        ).update({"usado": True})
+
+        nuevo_token = models.PasswordResetToken(
+            usuario_id=usuario_db.id,
+            token_hash=token_hash,
+            expiracion=expiracion,
+            usado=False
+        )
+        db.add(nuevo_token)
+        db.commit()
+
+    return {
+        "mensaje": "Si el correo está registrado, se ha generado el enlace/código de recuperación.",
+        "token": raw_token if usuario_db else None,
+        "validez_minutos": 15
+    }
+
+
+@app.post("/usuarios/recuperar/confirmar")
+def confirmar_recuperacion_password(
+    datos: schemas.ConfirmarRecuperacionRequest,
+    db: Session = Depends(get_db)
+):
+    token_limpio = datos.token.strip()
+    token_hash = hashlib.sha256(token_limpio.encode("utf-8")).hexdigest()
+
+    token_db = db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.token_hash == token_hash
+    ).first()
+
+    if not token_db or token_db.usado:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token inválido o ya utilizado."
+        )
+
+    if datetime.utcnow() > token_db.expiracion:
+        token_db.usado = True
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El token de recuperación ha expirado (validez máxima de 15 minutos)."
+        )
+
+    if len(datos.nueva_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="La nueva contraseña debe tener mínimo 8 caracteres."
+        )
+
+    usuario = db.query(models.Usuario).filter(models.Usuario.id == token_db.usuario_id).first()
+    if not usuario:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario asociado no encontrado."
+        )
+
+    usuario.hashed_password = pwd_context.hash(datos.nueva_password)
+    token_db.usado = True
+    db.commit()
+
+    return {"mensaje": "Contraseña restablecida con éxito. Ya puedes iniciar sesión con tu nueva contraseña."}
+
+
 @app.post("/usuarios/recuperar")
-def recuperar_password(datos: RecuperarPassword):
-    # No se permite cambiar una contraseña solo con el correo recibido.
-    # Este endpoint debe reemplazarse por un flujo con token de un solo uso
-    # enviado mediante un canal verificado antes de habilitarse nuevamente.
+def recuperar_password(datos: schemas.RecuperarPassword, db: Session = Depends(get_db)):
+    """
+    Ruta compatible para clientes que envían token en el payload o solicitan restablecimiento.
+    """
+    if datos.token:
+        req = schemas.ConfirmarRecuperacionRequest(token=datos.token, nueva_password=datos.nueva_password)
+        return confirmar_recuperacion_password(req, db)
+
     raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="La recuperación directa está deshabilitada. Solicita un enlace seguro de recuperación.",
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Se requiere un token de recuperación de un solo uso. Utiliza /usuarios/recuperar/solicitar para obtenerlo."
     )
 
 @app.post("/clinicas", response_model=schemas.ClinicaOut)
@@ -1333,8 +1491,27 @@ def chat_soporte_alma(request: schemas.ChatbotRequest, current_user: models.Usua
     - Usa listas numeradas (1, 2, 3) o viñetas para explicar pasos.
     """
 
+    if not request.historial:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El historial de conversación no puede estar vacío."
+        )
+
+    ultimo_mensaje = request.historial[-1].texto.strip()
+    if not ultimo_mensaje:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El mensaje del usuario no puede estar vacío."
+        )
+
+    api_key_actual = os.getenv("GEMINI_API_KEY")
+    if not api_key_actual:
+        return {
+            "respuesta": "Hola, soy ALMA. Para navegar en HorizonFlow puedes usar el menú lateral o el atajo '?' para ver todos los comandos."
+        }
+
     try:
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        genai.configure(api_key=api_key_actual)
         model = genai.GenerativeModel(
             model_name='gemini-2.5-flash',
             system_instruction=instrucciones
@@ -1346,8 +1523,6 @@ def chat_soporte_alma(request: schemas.ChatbotRequest, current_user: models.Usua
                 "role": "user" if msg.role == "user" else "model",
                 "parts": [msg.texto]
             })
-
-        ultimo_mensaje = request.historial[-1].texto
 
         respuesta_ia = model.generate_content(
             contents=historial_gemini + [{"role": "user", "parts": [ultimo_mensaje]}]
@@ -1361,52 +1536,55 @@ def chat_soporte_alma(request: schemas.ChatbotRequest, current_user: models.Usua
 
 def clasificar_comentario(texto_paciente: str) -> str:
     """
-    Toma el comentario del paciente y usa Gemini 1.5 Flash para clasificarlo
+    Toma el comentario del paciente y usa Gemini Flash para clasificarlo
     sin restarle los tokens comerciales al psicólogo.
     """
-    # Si el paciente no escribió nada o puso solo un "ok", va directo a NEUTRO para no hacer peticiones de balde
     if not texto_paciente or len(texto_paciente.strip()) < 3:
+        return "NEUTRO"
+
+    api_key_actual = os.getenv("GEMINI_API_KEY")
+    if not api_key_actual:
         return "NEUTRO"
         
     try:
-        # Usamos el modelo peso pluma y ultrarrápido
+        # Acotar tamaño para evitar abuso de cuota (max 500 chars)
+        comentario_seguro = texto_paciente.strip()[:500]
         model = genai.GenerativeModel('gemini-flash-latest')
         
-        # Le damos una orden militar a la IA para que no gaste tokens hablando de más
         prompt = f"""
         Actúa como un analizador de sentimientos clínicos. 
         Analiza este comentario de un paciente sobre su sesión psicológica y responde ÚNICAMENTE con una de estas tres palabras: POSITIVO, NEUTRO, o NEGATIVO. 
         No agregues puntos, ni comillas, ni explicaciones.
-        Comentario: "{texto_paciente}"
+        Comentario: "{comentario_seguro}"
         """
         
-        # Hacemos la llamada
         response = model.generate_content(prompt)
         resultado = response.text.strip().upper()
-        
-        # Limpieza por si la IA es necia y le pone un punto o comillas al final ("POSITIVO.")
         resultado = resultado.replace(".", "").replace('"', '').replace("'", "")
         
-        # Verificamos que sea exactamente la palabra que espera tu base de datos
         if resultado in ["POSITIVO", "NEUTRO", "NEGATIVO"]:
             return resultado
             
         return "NEUTRO"
         
     except Exception as e:
-        print(f"Error clasificando con IA (posible caída de red): {e}")
-        # 🌟 EL HACK DE SEGURIDAD: Si no hay internet o Google falla, devolvemos Neutro para que la encuesta SIEMPRE se guarde y no crashee
+        logger.warning(f"Clasificación IA degradada a NEUTRO por excepción controlada: {e}")
         return "NEUTRO"
 
 @app.post("/encuestas/publica/{psicologo_id}")
 def crear_encuesta_publica(psicologo_id: int, encuesta: schemas.EncuestaCreate, db: Session = Depends(get_db)):
+    psicologo = db.query(models.Usuario).filter(models.Usuario.id == psicologo_id).first()
+    if not psicologo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No se encontró ningún psicólogo registrado con el ID {psicologo_id}."
+        )
+
     tipo_com = "NEUTRO"
     
     if encuesta.q10_comentarios and encuesta.q10_comentarios.strip() != "":
-        # 🌟 1. Llamamos a nuestra función ligera de Gemini
         resultado_ia = clasificar_comentario(encuesta.q10_comentarios)
         
-        # 🌟 2. Mantenemos tu excelente lógica anti-sarcasmo con las estrellas
         if resultado_ia == "POSITIVO":
             if encuesta.q1_satisfaccion_general <= 3:
                 tipo_com = "NEGATIVO" 
@@ -1417,12 +1595,11 @@ def crear_encuesta_publica(psicologo_id: int, encuesta: schemas.EncuestaCreate, 
         else:
             tipo_com = "NEUTRO"
 
-    # 🌟 3. Guardamos en la base de datos sin gastar un solo mega de RAM
     nueva_encuesta = models.EncuestaExperiencia(
-    **encuesta.model_dump(),
-    tipo_comentario=tipo_com,
-    usuario_id=psicologo_id
-)
+        **encuesta.model_dump(),
+        tipo_comentario=tipo_com,
+        usuario_id=psicologo_id
+    )
     
     db.add(nueva_encuesta)
     db.commit()

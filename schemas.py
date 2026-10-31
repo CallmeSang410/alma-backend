@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from datetime import datetime # <-- NUEVO: Importamos el manejador de tiempo
+from pydantic import BaseModel, Field, ConfigDict
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 # 1. El molde base con TODOS los campos
@@ -9,7 +9,7 @@ class PacienteBase(BaseModel):
     email: Optional[str] = None
     edad: Optional[int] = None
     estado: Optional[str] = "Activo"
-    sexo: Optional[str] = None # 🌟 Tiene que estar aquí para que lo acepte
+    sexo: Optional[str] = None
     diagnostico_principal: Optional[str] = None
 
 # 2. Lo que exigimos cuando crean/editan uno nuevo
@@ -17,75 +17,66 @@ class PacienteCreate(PacienteBase):
     pass
 
 
-# --- NUEVOS MOLDES PARA CITAS ---
+# --- MOLDES PARA CITAS ---
 
-# Molde de ENTRADA (Lo que React nos manda al guardar)
 class CitaCreate(BaseModel):
     motivo: str
     fecha_cita: datetime
     estado: str
     modalidad: str
-    tarifa: float = 0.0 # 🌟 ¡NUEVO CAMPO FINANCIERO! (Default para que no explote)
+    tarifa: float = 0.0
 
-# Molde de SALIDA (Lo que le devolvemos a React para pintar las tarjetas)
 class CitaOut(BaseModel):
     id: int
     motivo: str
     fecha_cita: datetime
     estado: str
     modalidad: str
-    tarifa: float # 🌟 ¡Para que el dashboard pueda sumar los ingresos!
+    tarifa: float
     paciente_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# 🌟 EL MOLDE DE SALIDA DEFINITIVO Y CORRECTO:
+
 class PacienteOut(PacienteBase):
     id: int
-    folio_visual: Optional[int] = None  # 🌟 ¡NUEVO! El pase VIP para que React lo vea
+    folio_visual: Optional[int] = None
     clinica_id: int
     citas: List[CitaOut] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# --- Agregá este molde nuevo arriba en schemas.py ---
+
 class PacienteParaReporte(BaseModel):
     nombre: str
     edad: Optional[int] = None
     telefono: Optional[str] = None
     email: Optional[str] = None
-    folio_visual: Optional[int] = None  # 🌟 ¡NUEVO! Para que el PDF de Word también tenga el folio correcto
+    folio_visual: Optional[int] = None
 
-    class Config:
-        from_attributes = True
-# Molde de Entrada (Lo que el frontend envía para guardar el reporte)
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ReporteCreate(BaseModel):
     motivo_consulta: str
     notas_psicologo: str
     pruebas_aplicadas: Optional[str] = None
-
-    # 🌟 AHORA TODO ESTO ES OPCIONAL (Para permitir el guardado rápido)
     analisis_ia: Optional[str] = None
     diagnostico_final: Optional[str] = None
     recomendaciones: Optional[str] = None
     plan_accion: Optional[str] = None
-
-    # 🌟 NUEVO: El campo espía que nos dice si hay que actualizar al paciente
     actualizar_diagnostico_paciente: Optional[str] = None
+
 
 class AnalisisIARequest(BaseModel):
     motivo_consulta: str
     notas_psicologo: str
     pruebas_aplicadas: str
-    resultados_pruebas: str  # 🌟 Asegurate de tener esto
-    # 🌟 LAS DOS LÍNEAS QUE EVITAN EL ERROR 422:
+    resultados_pruebas: str
     edad_paciente: str
     sexo_paciente: str
 
 
-# Molde de Salida (Lo que devolvemos)
 class ReporteOut(BaseModel):
     id: int
     motivo_consulta: Optional[str] = None
@@ -97,31 +88,31 @@ class ReporteOut(BaseModel):
     plan_accion: Optional[str] = None
     fecha_generacion: datetime
     cita_id: int
-
-    # 🌟 LA GAVETA MÁGICA: Aquí vendrán los datos del paciente unidos
     paciente_data: Optional[PacienteParaReporte] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
 
 # --- MOLDES PARA USUARIOS Y CLÍNICAS ---
 
 class ClinicaCreate(BaseModel):
     nombre: str
 
+
 class ClinicaOut(BaseModel):
     id: int
     nombre: str
     codigo_invitacion: Optional[str] = None
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 class UsuarioCreate(BaseModel):
     nombre_clinica: Optional[str] = None
     codigo_invitacion: Optional[str] = None
     email: str
     password: str
-    rol: str  # Le quitamos el = "psicologo" para que obligue a React a mandar el rol real
+    rol: str
 
 
 class UsuarioOut(BaseModel):
@@ -129,8 +120,9 @@ class UsuarioOut(BaseModel):
     email: str
     rol: str
     clinica_id: int
-    class Config:
-        from_attributes = True
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 class UsuarioLogin(BaseModel):
     email: str
@@ -139,9 +131,9 @@ class UsuarioLogin(BaseModel):
 
 class GoogleAuthRequest(BaseModel):
     credential: str
-    modo: Optional[str] = "login"  # "login" | "signup"
-    tipo_clinica: Optional[str] = "nueva"  # "nueva" | "existente"
+    modo: Optional[str] = "login"
     nombre_clinica: Optional[str] = None
+    tipo_clinica: Optional[str] = "nueva"
     codigo_invitacion: Optional[str] = None
     rol: Optional[str] = "psicologo"
 
@@ -150,75 +142,93 @@ class GoogleLinkRequest(BaseModel):
     credential: str
 
 
-# Molde para cuando el psicólogo CREA un evento nuevo
+# --- EVENTOS DE VIDA ---
+
 class EventoVidaCreate(BaseModel):
     titulo: str
-    fecha_evento: str
-    descripcion: Optional[str] = None
+    fecha_evento: datetime
+    descripcion: str
     impacto: str
-    nota_titulo: Optional[str] = None      # 🌟 NUEVO
-    nota_contenido: Optional[str] = None   # 🌟 NUEVO
+    nota_titulo: Optional[str] = None
+    nota_contenido: Optional[str] = None
 
 
 class EventoVidaOut(BaseModel):
     id: int
     titulo: str
-    fecha_evento: str
-    descripcion: Optional[str] = None
+    fecha_evento: datetime
+    descripcion: str
     impacto: str
-    nota_titulo: Optional[str] = None      # 🌟 NUEVO
-    nota_contenido: Optional[str] = None   # 🌟 NUEVO
+    nota_titulo: Optional[str] = None
+    nota_contenido: Optional[str] = None
     paciente_id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-from typing import List
+
+# --- CHATBOT ---
 
 class MensajeChat(BaseModel):
     role: str
     texto: str
 
+
 class ChatbotRequest(BaseModel):
-    historial: List[MensajeChat]
+    historial: List[MensajeChat] = Field(..., min_length=1)
 
-# Cuando el paciente manda la encuesta
+
+# --- ENCUESTAS ---
+
 class EncuestaCreate(BaseModel):
-    q1_satisfaccion_general: int
-    q2_cumplimiento_expectativas: str
-    q3_empatia_conexion: str
-    q4_aspectos_valorados: str
-    q5_instalaciones: int
-    q6_claridad_pautas: str
-    q7_impacto_animo: str
-    q8_confianza_seguridad: str
-    q9_indice_recomendacion: str
-    q10_comentarios: Optional[str] = None
+    q1_satisfaccion_general: int = Field(..., ge=1, le=5)
+    q2_cumplimiento_expectativas: str = Field(..., max_length=255)
+    q3_empatia_conexion: str = Field(..., max_length=255)
+    q4_aspectos_valorados: str = Field(..., max_length=255)
+    q5_instalaciones: int = Field(..., ge=1, le=5)
+    q6_claridad_pautas: str = Field(..., max_length=255)
+    q7_impacto_animo: str = Field(..., max_length=255)
+    q8_confianza_seguridad: str = Field(..., max_length=255)
+    q9_indice_recomendacion: str = Field(..., max_length=255)
+    q10_comentarios: Optional[str] = Field(None, max_length=1000)
 
 
-# Cuando React pide las encuestas (con todos los datos)
 class EncuestaOut(EncuestaCreate):
     id: int
     fecha_generacion: datetime
     tipo_comentario: str
     usuario_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ComentarioFeedback(BaseModel):
     texto: str
 
 
-
-class TusStatsDePaciente(BaseModel): # Como sea que se llame tu clase
+class TusStatsDePaciente(BaseModel):
     total: int
     crecimiento_mes: str
-    historial: Dict[str, int] = Field(default_factory=dict) # 🌟 EL PASE VIP PARA QUE LLEGUE A REACT
+    historial: Dict[str, int] = Field(default_factory=dict)
+
 
 class PerfilUpdate(BaseModel):
     nombre_clinica: str
-    password_actual: Optional[str] = None # 🌟 Recibimos la vieja
+    password_actual: Optional[str] = None
     password: Optional[str] = None
+
+
+# --- RECUPERACIÓN DE CONTRASEÑA SEGURA (HF-001) ---
+
+class SolicitarRecuperacionRequest(BaseModel):
+    email: str = Field(..., max_length=255)
+
+
+class ConfirmarRecuperacionRequest(BaseModel):
+    token: str = Field(..., min_length=16, max_length=128)
+    nueva_password: str = Field(..., min_length=8, max_length=72)
+
+
 class RecuperarPassword(BaseModel):
     email: str
     nueva_password: str
+    token: Optional[str] = None
