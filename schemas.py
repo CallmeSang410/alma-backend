@@ -1,6 +1,9 @@
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime # <-- NUEVO: Importamos el manejador de tiempo
 from typing import List, Optional, Dict, Any
+
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 # 1. El molde base con TODOS los campos
 class PacienteBase(BaseModel):
@@ -12,20 +15,49 @@ class PacienteBase(BaseModel):
     sexo: Optional[str] = None # 🌟 Tiene que estar aquí para que lo acepte
     diagnostico_principal: Optional[str] = None
 
-# 2. Lo que exigimos cuando crean/editan uno nuevo
+# 2. Lo que exigimos cuando crean/editan uno nuevo (Validaciones CP-05, CP-06 y CP-07)
 class PacienteCreate(PacienteBase):
-    pass
+    nombre: str = Field(..., min_length=1, max_length=150)
+    edad: Optional[int] = Field(default=None, ge=0, le=120)
+
+    @field_validator("nombre")
+    @classmethod
+    def validar_nombre_no_vacio(cls, v: str) -> str:
+        limpio = v.strip()
+        if not limpio:
+            raise ValueError("El nombre del paciente es obligatorio y no puede estar vacío.")
+        return limpio
+
+    @field_validator("email")
+    @classmethod
+    def validar_formato_email(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        limpio = v.strip()
+        if not limpio:
+            return None
+        if not EMAIL_REGEX.match(limpio):
+            raise ValueError("El formato del correo electrónico no es válido.")
+        return limpio
 
 
 # --- NUEVOS MOLDES PARA CITAS ---
 
 # Molde de ENTRADA (Lo que React nos manda al guardar)
 class CitaCreate(BaseModel):
-    motivo: str
+    motivo: str = Field(..., min_length=1, max_length=250)
     fecha_cita: datetime
-    estado: str
-    modalidad: str
-    tarifa: float = 0.0 # 🌟 ¡NUEVO CAMPO FINANCIERO! (Default para que no explote)
+    estado: str = Field(..., min_length=1, max_length=50)
+    modalidad: str = Field(..., min_length=1, max_length=50)
+    tarifa: float = Field(default=0.0, ge=0.0) # 🌟 ¡NUEVO CAMPO FINANCIERO! (Default para que no explote y sin negativos)
+
+    @field_validator("motivo", "estado", "modalidad")
+    @classmethod
+    def validar_campos_cita_no_vacios(cls, v: str) -> str:
+        limpio = v.strip()
+        if not limpio:
+            raise ValueError("Los campos de motivo, estado y modalidad de la cita son obligatorios.")
+        return limpio
 
 # Molde de SALIDA (Lo que le devolvemos a React para pintar las tarjetas)
 class CitaOut(BaseModel):
@@ -60,10 +92,11 @@ class PacienteParaReporte(BaseModel):
 
     class Config:
         from_attributes = True
+
 # Molde de Entrada (Lo que el frontend envía para guardar el reporte)
 class ReporteCreate(BaseModel):
-    motivo_consulta: str
-    notas_psicologo: str
+    motivo_consulta: str = Field(..., min_length=1)
+    notas_psicologo: str = Field(..., min_length=1)
     pruebas_aplicadas: Optional[str] = None
 
     # 🌟 AHORA TODO ESTO ES OPCIONAL (Para permitir el guardado rápido)
@@ -75,9 +108,17 @@ class ReporteCreate(BaseModel):
     # 🌟 NUEVO: El campo espía que nos dice si hay que actualizar al paciente
     actualizar_diagnostico_paciente: Optional[str] = None
 
+    @field_validator("motivo_consulta", "notas_psicologo")
+    @classmethod
+    def validar_reporte_no_vacio(cls, v: str) -> str:
+        limpio = v.strip()
+        if not limpio:
+            raise ValueError("El motivo de consulta y las notas clínicas son obligatorios.")
+        return limpio
+
 class AnalisisIARequest(BaseModel):
-    motivo_consulta: str
-    notas_psicologo: str
+    motivo_consulta: str = Field(..., min_length=1)
+    notas_psicologo: str = Field(..., min_length=1)
     pruebas_aplicadas: str
     resultados_pruebas: str  # 🌟 Asegurate de tener esto
     # 🌟 LAS DOS LÍNEAS QUE EVITAN EL ERROR 422:
@@ -107,7 +148,7 @@ class ReporteOut(BaseModel):
 # --- MOLDES PARA USUARIOS Y CLÍNICAS ---
 
 class ClinicaCreate(BaseModel):
-    nombre: str
+    nombre: str = Field(..., min_length=1, max_length=150)
 
 class ClinicaOut(BaseModel):
     id: int
@@ -119,8 +160,8 @@ class ClinicaOut(BaseModel):
 class UsuarioCreate(BaseModel):
     nombre_clinica: Optional[str] = None
     codigo_invitacion: Optional[str] = None
-    email: str
-    password: str
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=8)
     rol: str  # Le quitamos el = "psicologo" para que obligue a React a mandar el rol real
 
 
@@ -133,31 +174,40 @@ class UsuarioOut(BaseModel):
         from_attributes = True
 
 class UsuarioLogin(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
 
 
 class GoogleAuthRequest(BaseModel):
-    credential: str
+    credential: str = Field(..., min_length=10)
     modo: Optional[str] = "login"  # "login" | "signup"
     tipo_clinica: Optional[str] = "nueva"  # "nueva" | "existente"
     nombre_clinica: Optional[str] = None
     codigo_invitacion: Optional[str] = None
     rol: Optional[str] = "psicologo"
+    password: Optional[str] = None
 
 
 class GoogleLinkRequest(BaseModel):
-    credential: str
+    credential: str = Field(..., min_length=10)
 
 
 # Molde para cuando el psicólogo CREA un evento nuevo
 class EventoVidaCreate(BaseModel):
-    titulo: str
-    fecha_evento: str
+    titulo: str = Field(..., min_length=1, max_length=200)
+    fecha_evento: str = Field(..., min_length=1)
     descripcion: Optional[str] = None
-    impacto: str
+    impacto: str = Field(..., min_length=1)
     nota_titulo: Optional[str] = None      # 🌟 NUEVO
     nota_contenido: Optional[str] = None   # 🌟 NUEVO
+
+    @field_validator("titulo", "fecha_evento", "impacto")
+    @classmethod
+    def validar_evento_no_vacio(cls, v: str) -> str:
+        limpio = v.strip()
+        if not limpio:
+            raise ValueError("El título, la fecha y el impacto del evento son obligatorios.")
+        return limpio
 
 
 class EventoVidaOut(BaseModel):
@@ -173,26 +223,25 @@ class EventoVidaOut(BaseModel):
     class Config:
         from_attributes = True
 
-from typing import List
 
 class MensajeChat(BaseModel):
-    role: str
-    texto: str
+    role: str = Field(..., min_length=1)
+    texto: str = Field(..., min_length=1)
 
 class ChatbotRequest(BaseModel):
-    historial: List[MensajeChat]
+    historial: List[MensajeChat] = Field(..., min_length=1)
 
 # Cuando el paciente manda la encuesta
 class EncuestaCreate(BaseModel):
-    q1_satisfaccion_general: int
-    q2_cumplimiento_expectativas: str
-    q3_empatia_conexion: str
-    q4_aspectos_valorados: str
-    q5_instalaciones: int
-    q6_claridad_pautas: str
-    q7_impacto_animo: str
-    q8_confianza_seguridad: str
-    q9_indice_recomendacion: str
+    q1_satisfaccion_general: int = Field(..., ge=1, le=5)
+    q2_cumplimiento_expectativas: str = Field(..., min_length=1)
+    q3_empatia_conexion: str = Field(..., min_length=1)
+    q4_aspectos_valorados: str = Field(..., min_length=1)
+    q5_instalaciones: int = Field(..., ge=1, le=5)
+    q6_claridad_pautas: str = Field(..., min_length=1)
+    q7_impacto_animo: str = Field(..., min_length=1)
+    q8_confianza_seguridad: str = Field(..., min_length=1)
+    q9_indice_recomendacion: str = Field(..., min_length=1)
     q10_comentarios: Optional[str] = None
 
 
@@ -204,10 +253,10 @@ class EncuestaOut(EncuestaCreate):
     usuario_id: int
 
     class Config:
-        orm_mode = True
-class ComentarioFeedback(BaseModel):
-    texto: str
+        from_attributes = True
 
+class ComentarioFeedback(BaseModel):
+    texto: str = Field(..., min_length=1)
 
 
 class TusStatsDePaciente(BaseModel): # Como sea que se llame tu clase
@@ -219,6 +268,7 @@ class PerfilUpdate(BaseModel):
     nombre_clinica: str
     password_actual: Optional[str] = None # 🌟 Recibimos la vieja
     password: Optional[str] = None
+
 class RecuperarPassword(BaseModel):
-    email: str
-    nueva_password: str
+    email: str = Field(..., min_length=1)
+    nueva_password: str = Field(..., min_length=8)

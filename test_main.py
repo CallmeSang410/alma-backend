@@ -312,3 +312,84 @@ def test_no_puede_leer_paciente_de_otra_clinica():
         ),
     )
     assert respuesta.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 6. Encabezados HTTP de seguridad y trazabilidad (Fase 5.2 y Fase 6)
+# ---------------------------------------------------------------------------
+def test_respuestas_incluyen_encabezados_de_seguridad_y_request_id():
+    respuesta = client.get("/health")
+    assert respuesta.status_code == 200
+    assert respuesta.headers.get("x-content-type-options") == "nosniff"
+    assert respuesta.headers.get("x-frame-options") == "DENY"
+    assert respuesta.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+    assert "camera=()" in (respuesta.headers.get("permissions-policy") or "")
+    assert respuesta.headers.get("x-request-id") is not None
+
+
+# ---------------------------------------------------------------------------
+# 7. Validación de formatos y rangos CP-05 y CP-07 (Fase 3)
+# ---------------------------------------------------------------------------
+def test_crear_paciente_nombre_en_blanco_o_edad_negativa_devuelve_422():
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+    headers = _headers_auth(
+        datos["usuario_a_id"], datos["usuario_a_clinica_id"], datos["usuario_a_rol"]
+    )
+
+    resp_vacio = client.post("/pacientes", headers=headers, json={"nombre": "   "})
+    assert resp_vacio.status_code == 422
+
+    resp_edad_neg = client.post(
+        "/pacientes", headers=headers, json={"nombre": "Paciente Test", "edad": -5}
+    )
+    assert resp_edad_neg.status_code == 422
+
+    resp_email_invalido = client.post(
+        "/pacientes",
+        headers=headers,
+        json={"nombre": "Paciente Test", "email": "correo-sin-arroba"},
+    )
+    assert resp_email_invalido.status_code == 422
+
+
+def test_crear_cita_tarifa_negativa_devuelve_422():
+    _reset_db()
+    datos = _sembrar_dos_clinicas()
+    headers = _headers_auth(
+        datos["usuario_a_id"], datos["usuario_a_clinica_id"], datos["usuario_a_rol"]
+    )
+    paciente_id = datos["paciente_a_id"]
+
+    respuesta = client.post(
+        f"/pacientes/{paciente_id}/citas",
+        headers=headers,
+        json={
+            "motivo": "Consulta",
+            "fecha_cita": "2026-11-10T10:00:00",
+            "estado": "Pendiente",
+            "modalidad": "Presencial",
+            "tarifa": -150.0,
+        },
+    )
+    assert respuesta.status_code == 422
+
+
+def test_encuesta_publica_psicologo_inexistente_devuelve_404():
+    _reset_db()
+    respuesta = client.post(
+        "/encuestas/publica/999999",
+        json={
+            "q1_satisfaccion_general": 5,
+            "q2_cumplimiento_expectativas": "Sí",
+            "q3_empatia_conexion": "Excelente",
+            "q4_aspectos_valorados": "Puntualidad",
+            "q5_instalaciones": 5,
+            "q6_claridad_pautas": "Muy claras",
+            "q7_impacto_animo": "Positivo",
+            "q8_confianza_seguridad": "Alta",
+            "q9_indice_recomendacion": "Definitivamente",
+            "q10_comentarios": "Excelente atención",
+        },
+    )
+    assert respuesta.status_code == 404

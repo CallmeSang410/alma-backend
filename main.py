@@ -1,13 +1,15 @@
 import os
 import re
+import json
+import uuid
 import time
 import secrets
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 import requests
-from fastapi import FastAPI, Depends, HTTPException, Body, Query, status
+from fastapi import FastAPI, Depends, HTTPException, Body, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from google.oauth2 import id_token
@@ -30,7 +32,34 @@ from models import Paciente, Cita, EncuestaExperiencia, Usuario
 load_dotenv()
 
 app = FastAPI()
+
+
+class JsonLogFormatter(logging.Formatter):
+    """Formatea logs estructurados en JSON con niveles de severidad y metadatos HTTP (Lab 15 Fase 6)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        for extra_field in ("request_id", "method", "path", "status_code", "latency_ms"):
+            value = getattr(record, extra_field, None)
+            if value is not None:
+                log_entry[extra_field] = value
+        if record.exc_info:
+            log_entry["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_entry, ensure_ascii=False)
+
+
 logger = logging.getLogger("horizonflow")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(JsonLogFormatter())
+    logger.addHandler(stream_handler)
+logger.propagate = False
 
 # 2. CONFIGURACIÓN DE CORS (Una sola vez y bien hecha)
 cors_origins = [
@@ -48,6 +77,58 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def security_headers_and_structured_logging_middleware(request: Request, call_next):
+    """
+    Inyecta encabezados HTTP de seguridad (Fase 5.2) y registra cada petición
+    en formato JSON estructurado con nivel de severidad y latencia (Fase 6).
+    """
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    inicio = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        latencia_ms = round((time.perf_counter() - inicio) * 1000, 2)
+        logger.exception(
+            "Excepción no controlada procesando solicitud HTTP",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": 500,
+                "latency_ms": latencia_ms,
+            },
+        )
+        raise
+
+    latencia_ms = round((time.perf_counter() - inicio) * 1000, 2)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["X-Request-ID"] = request_id
+
+    nivel_log = (
+        logging.ERROR
+        if response.status_code >= 500
+        else logging.WARNING
+        if response.status_code >= 400
+        else logging.INFO
+    )
+    logger.log(
+        nivel_log,
+        f"{request.method} {request.url.path} -> {response.status_code}",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "latency_ms": latencia_ms,
+        },
+    )
+    return response
+
+
 # Endpoint ultraligero para warm-up (precalentamiento en Render) sin tocar Base de Datos
 @app.get("/health")
 def health_check():
@@ -58,7 +139,7 @@ api_key = os.getenv("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
 else:
-    print("⚠️ ADVERTENCIA: No se encontró GEMINI_API_KEY en el archivo .env")
+    logger.warning("No se encontró GEMINI_API_KEY en el entorno; funciones de IA deshabilitadas.")
 
 # 4. SEGURIDAD, TOKENS Y CACHÉ EN MEMORIA PARA LLAVES PÚBLICAS DE GOOGLE OAUTH
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -123,7 +204,7 @@ def verificar_password_seguro(plain_password: str, hashed_password: str) -> bool
     try:
         return pwd_context.verify(plain_password[:72], hashed_password)
     except Exception as err:
-        print(f"⚠️ Error controlado verificando hash de contraseña: {err}")
+        logger.warning(f"Error controlado verificando hash de contraseña: {err}")
         return False
 
 def generar_codigo_invitacion_unico(db: Session) -> str:
@@ -158,11 +239,11 @@ def asegurar_migracion_bd():
                 for clinica in clinicas_sin_codigo:
                     clinica.codigo_invitacion = generar_codigo_invitacion_unico(db)
                 db.commit()
-                print(f"✅ Migración completada: {len(clinicas_sin_codigo)} clínica(s) actualizada(s) con código de invitación.")
+                logger.info(f"Migración completada: {len(clinicas_sin_codigo)} clínica(s) actualizada(s) con código de invitación.")
         finally:
             db.close()
     except Exception as err:
-        print(f"⚠️ Aviso durante la verificación de migración automática: {err}")
+        logger.warning(f"Aviso durante la verificación de migración automática: {err}")
 
 asegurar_migracion_bd()
 
@@ -202,13 +283,13 @@ def validar_token_google(credential: str) -> dict:
     except HTTPException:
         raise
     except ValueError as err:
-        print(f"❌ Error validando token de Google: {err}")
+        logger.warning(f"Error validando token de Google: {err}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token de Google inválido o expirado."
         )
     except Exception as err:
-        print(f"❌ Error inesperado en verificación de Google OAuth: {err}")
+        logger.error(f"Error inesperado en verificación de Google OAuth: {err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al verificar las credenciales con Google."
@@ -313,7 +394,7 @@ def iniciar_sesion_google(datos: GoogleAuthRequest, db: Session = Depends(get_db
 
         es_nuevo_usuario = True
         tipo_clinica = (datos.tipo_clinica or "nueva").strip().lower()
-        roles_permitidos = {"psicologo", "estudiante", "recepcionista", "admin"}
+        roles_permitidos = {"psicologo", "estudiante", "admin"}
         rol_asignado = datos.rol if datos.rol in roles_permitidos else "psicologo"
 
         try:
@@ -359,8 +440,18 @@ def iniciar_sesion_google(datos: GoogleAuthRequest, db: Session = Depends(get_db
                 db.add(clinica_destino)
                 db.flush()
 
-            # Hash prefijado con !GOOGLE_OAUTH! para impedir login por texto plano y errores de passlib
-            password_protegida = f"{GOOGLE_OAUTH_PREFIX}{get_password_hash(secrets.token_urlsafe(24))}"
+            # Si el usuario definió su contraseña en Sign up, la guardamos hasheada para que también
+            # pueda iniciar sesión manualmente con su correo + contraseña además de con Google.
+            password_manual = (datos.password or "").strip()
+            if password_manual:
+                if len(password_manual) < 8:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="La contraseña debe tener al menos 8 caracteres."
+                    )
+                password_protegida = get_password_hash(password_manual)
+            else:
+                password_protegida = f"{GOOGLE_OAUTH_PREFIX}{get_password_hash(secrets.token_urlsafe(24))}"
 
             usuario_db = models.Usuario(
                 username=email,
@@ -377,11 +468,19 @@ def iniciar_sesion_google(datos: GoogleAuthRequest, db: Session = Depends(get_db
             raise
         except Exception as err:
             db.rollback()
-            print(f"❌ Error aprovisionando usuario de Google: {err}")
+            logger.error(f"Error aprovisionando usuario de Google: {err}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="No se pudo crear la cuenta vinculada a Google."
             )
+
+    else:
+        # Si el usuario ya existía y envió una nueva contraseña al autenticarse con Google, la sincronizamos
+        password_manual = (datos.password or "").strip()
+        if password_manual and len(password_manual) >= 8:
+            usuario_db.hashed_password = get_password_hash(password_manual)
+            db.commit()
+            db.refresh(usuario_db)
 
     # Asegurar que la clínica tenga su código de invitación generado
     if usuario_db.clinica and not usuario_db.clinica.codigo_invitacion:
@@ -525,7 +624,7 @@ def vincular_cuenta_google(
         raise
     except Exception as err:
         db.rollback()
-        print(f"❌ Error vinculando cuenta con Google: {err}")
+        logger.error(f"Error vinculando cuenta con Google: {err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno al vincular la cuenta de Google."
@@ -555,10 +654,11 @@ def actualizar_perfil(
         usuario.clinica.nombre = nombre_nuevo
     
     if datos.password:
-        # Si la cuenta ya tenía contraseña manual, exigimos validar password_actual.
-        # Si fue creada exclusivamente con Google OAuth, le permitimos establecer su primera contraseña manual.
-        if not es_cuenta_solo_google(usuario.hashed_password):
-            if not datos.password_actual or not verificar_password_seguro(datos.password_actual, usuario.hashed_password):
+        # Si el usuario autenticado envía password_actual, la validamos.
+        # Si dejó password_actual vacío (ej. entró con Google y quiere configurar su contraseña para login manual),
+        # permitimos establecerla dado que ya cuenta con un token JWT válido de su sesión activa.
+        if datos.password_actual and datos.password_actual.strip() and not es_cuenta_solo_google(usuario.hashed_password):
+            if not verificar_password_seguro(datos.password_actual, usuario.hashed_password):
                 raise HTTPException(status_code=400, detail="La contraseña actual es incorrecta.")
         
         if len(datos.password) < 8:
@@ -848,6 +948,7 @@ def eliminar_evento(evento_id: int, db: Session = Depends(get_db), current_user:
 def obtener_todos_los_reportes(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
     db_reportes = (
         db.query(models.Reporte)
+        .options(joinedload(models.Reporte.cita).joinedload(models.Cita.paciente))
         .join(models.Cita)
         .join(models.Paciente)
         .filter(models.Paciente.clinica_id == current_user.clinica_id)
@@ -856,10 +957,8 @@ def obtener_todos_los_reportes(db: Session = Depends(get_db), current_user: mode
 
     respuesta = []
     for reporte in db_reportes:
-        cita = db.query(models.Cita).filter(models.Cita.id == reporte.cita_id).first()
-        paciente = None
-        if cita:
-            paciente = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
+        cita = reporte.cita
+        paciente = cita.paciente if cita else None
         
         rep_dict = {
             "id": reporte.id,
@@ -979,17 +1078,23 @@ def obtener_alertas_activas(
     ahora = datetime.now()
     limite_alerta = ahora + timedelta(hours=horas)
     
-    citas_criticas = db.query(models.Cita).join(models.Paciente).filter(
-        models.Paciente.clinica_id == current_user.clinica_id, 
-        models.Cita.fecha_cita >= ahora,
-        models.Cita.fecha_cita <= limite_alerta,
-        # 🌟 EL CAMBIO MAGICO: Ahora busca ambas
-        models.Cita.estado.in_(["Pendiente", "Reservada"])
-    ).all()
+    citas_criticas = (
+        db.query(models.Cita)
+        .options(joinedload(models.Cita.paciente))
+        .join(models.Paciente)
+        .filter(
+            models.Paciente.clinica_id == current_user.clinica_id, 
+            models.Cita.fecha_cita >= ahora,
+            models.Cita.fecha_cita <= limite_alerta,
+            # 🌟 EL CAMBIO MAGICO: Ahora busca ambas
+            models.Cita.estado.in_(["Pendiente", "Reservada"])
+        )
+        .all()
+    )
     
     respuesta = []
     for cita in citas_criticas:
-        paciente_db = db.query(models.Paciente).filter(models.Paciente.id == cita.paciente_id).first()
+        paciente_db = cita.paciente
         cita_dict = {
             "id": cita.id,
             "fecha_cita": cita.fecha_cita,
@@ -1005,9 +1110,12 @@ def obtener_alertas_activas(
 
 @app.get("/dashboard/pacientes-activos")
 def obtener_pacientes_activos(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
-    pacientes = db.query(models.Paciente).filter(
-        models.Paciente.clinica_id == current_user.clinica_id
-    ).all()
+    pacientes = (
+        db.query(models.Paciente)
+        .options(joinedload(models.Paciente.citas))
+        .filter(models.Paciente.clinica_id == current_user.clinica_id)
+        .all()
+    )
 
     hoy = datetime.now()
     mes_actual = hoy.month
@@ -1021,14 +1129,10 @@ def obtener_pacientes_activos(db: Session = Depends(get_db), current_user: model
     historial_mensual = {}
 
     for paciente in pacientes:
-        primera_cita = db.query(models.Cita).filter(
-            models.Cita.paciente_id == paciente.id,
-            models.Cita.fecha_cita != None
-        ).order_by(models.Cita.fecha_cita.asc()).first()
-
-        if not primera_cita:
+        citas_con_fecha = [c for c in (paciente.citas or []) if c.fecha_cita is not None]
+        if not citas_con_fecha:
             continue
-            
+        primera_cita = min(citas_con_fecha, key=lambda c: c.fecha_cita)
         fecha = primera_cita.fecha_cita
         
         if fecha.year == anio_actual and fecha.month == mes_actual:
@@ -1185,23 +1289,21 @@ def obtener_distribucion_motivos(db: Session = Depends(get_db), current_user: mo
 
 @app.get("/dashboard/alertas-inactividad")
 def obtener_alertas_inactividad(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
-    pacientes = db.query(models.Paciente).filter(
-        models.Paciente.clinica_id == current_user.clinica_id
-    ).all()
+    pacientes = (
+        db.query(models.Paciente)
+        .options(joinedload(models.Paciente.citas))
+        .filter(models.Paciente.clinica_id == current_user.clinica_id)
+        .all()
+    )
 
     alertas = []
     hoy = datetime.now()
 
     for paciente in pacientes:
-        ultima_cita = db.query(models.Cita).filter(
-            models.Cita.paciente_id == paciente.id,
-            models.Cita.fecha_cita <= hoy
-        ).order_by(models.Cita.fecha_cita.desc()).first()
-
-        cita_futura = db.query(models.Cita).filter(
-            models.Cita.paciente_id == paciente.id,
-            models.Cita.fecha_cita > hoy
-        ).first()
+        citas_paciente = [c for c in (paciente.citas or []) if c.fecha_cita is not None]
+        citas_pasadas = [c for c in citas_paciente if c.fecha_cita <= hoy]
+        ultima_cita = max(citas_pasadas, key=lambda c: c.fecha_cita) if citas_pasadas else None
+        cita_futura = any(c.fecha_cita > hoy for c in citas_paciente)
 
         if ultima_cita and not cita_futura:
             dias_inactivos = (hoy - ultima_cita.fecha_cita).days
@@ -1394,12 +1496,16 @@ def clasificar_comentario(texto_paciente: str) -> str:
         return "NEUTRO"
         
     except Exception as e:
-        print(f"Error clasificando con IA (posible caída de red): {e}")
+        logger.warning(f"Error clasificando con IA (posible caída de red): {e}")
         # 🌟 EL HACK DE SEGURIDAD: Si no hay internet o Google falla, devolvemos Neutro para que la encuesta SIEMPRE se guarde y no crashee
         return "NEUTRO"
 
 @app.post("/encuestas/publica/{psicologo_id}")
 def crear_encuesta_publica(psicologo_id: int, encuesta: schemas.EncuestaCreate, db: Session = Depends(get_db)):
+    psicologo_db = db.query(models.Usuario).filter(models.Usuario.id == psicologo_id).first()
+    if not psicologo_db:
+        raise HTTPException(status_code=404, detail="Profesional no encontrado")
+
     tipo_com = "NEUTRO"
     
     if encuesta.q10_comentarios and encuesta.q10_comentarios.strip() != "":
