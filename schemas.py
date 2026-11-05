@@ -4,6 +4,7 @@ from datetime import datetime # <-- NUEVO: Importamos el manejador de tiempo
 from typing import List, Optional, Dict, Any
 
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+TELEFONO_REGEX = re.compile(r"^\+?[0-9\s\-().]{6,25}$")
 
 # 1. El molde base con TODOS los campos
 class PacienteBase(BaseModel):
@@ -26,6 +27,19 @@ class PacienteCreate(PacienteBase):
         limpio = v.strip()
         if not limpio:
             raise ValueError("El nombre del paciente es obligatorio y no puede estar vacío.")
+        return limpio
+
+    @field_validator("telefono")
+    @classmethod
+    def validar_formato_telefono(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        limpio = v.strip()
+        if not limpio:
+            return None
+        solo_digitos = re.sub(r"\D", "", limpio)
+        if not TELEFONO_REGEX.match(limpio) or len(solo_digitos) < 6 or len(solo_digitos) > 15:
+            raise ValueError("El número telefónico debe contener solo números y tener entre 6 y 15 dígitos (ej. +505 8888-8888).")
         return limpio
 
     @field_validator("email")

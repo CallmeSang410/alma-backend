@@ -352,6 +352,27 @@ def test_crear_paciente_nombre_en_blanco_o_edad_negativa_devuelve_422():
     )
     assert resp_email_invalido.status_code == 422
 
+    resp_telefono_letras = client.post(
+        "/pacientes",
+        headers=headers,
+        json={"nombre": "Paciente Test", "telefono": "cualquier cosa"},
+    )
+    assert resp_telefono_letras.status_code == 422
+
+    resp_telefono_corto = client.post(
+        "/pacientes",
+        headers=headers,
+        json={"nombre": "Paciente Test", "telefono": "123"},
+    )
+    assert resp_telefono_corto.status_code == 422
+
+    resp_telefono_valido = client.post(
+        "/pacientes",
+        headers=headers,
+        json={"nombre": "Paciente Valido", "telefono": "+505 8888-8888"},
+    )
+    assert resp_telefono_valido.status_code == 200
+
 
 def test_crear_cita_tarifa_negativa_devuelve_422():
     _reset_db()
