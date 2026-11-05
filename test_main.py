@@ -340,6 +340,20 @@ def test_crear_paciente_nombre_en_blanco_o_edad_negativa_devuelve_422():
     resp_vacio = client.post("/pacientes", headers=headers, json={"nombre": "   "})
     assert resp_vacio.status_code == 422
 
+    resp_nombre_con_numeros = client.post(
+        "/pacientes",
+        headers=headers,
+        json={"nombre": "21231123"},
+    )
+    assert resp_nombre_con_numeros.status_code == 422
+
+    resp_nombre_con_numeros_mixto = client.post(
+        "/pacientes",
+        headers=headers,
+        json={"nombre": "Juan 123"},
+    )
+    assert resp_nombre_con_numeros_mixto.status_code == 422
+
     resp_edad_neg = client.post(
         "/pacientes", headers=headers, json={"nombre": "Paciente Test", "edad": -5}
     )

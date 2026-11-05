@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 TELEFONO_REGEX = re.compile(r"^\+?[0-9\s\-().]{6,25}$")
+NOMBRE_REGEX = re.compile(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s.'-]+$")
 
 # 1. El molde base con TODOS los campos
 class PacienteBase(BaseModel):
@@ -27,6 +28,13 @@ class PacienteCreate(PacienteBase):
         limpio = v.strip()
         if not limpio:
             raise ValueError("El nombre del paciente es obligatorio y no puede estar vacío.")
+        if any(char.isdigit() for char in limpio):
+            raise ValueError("El nombre del paciente no puede contener números.")
+        if not NOMBRE_REGEX.match(limpio):
+            raise ValueError("El nombre del paciente solo puede contener letras y espacios.")
+        solo_letras = re.sub(r"[^a-zA-ZáéíóúÁÉÍÓÚñÑüÜ]", "", limpio)
+        if len(solo_letras) < 2:
+            raise ValueError("El nombre del paciente debe contener al menos 2 letras.")
         return limpio
 
     @field_validator("telefono")
